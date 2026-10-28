@@ -1,6 +1,5 @@
 
-# 📻 DX Cluster Map
-
+#📻 DX Cluster Map
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PySide6](https://img.shields.io/badge/PySide6-6.5%2B-green)
@@ -9,8 +8,7 @@ Un'applicazione desktop cross-platform (Linux/Windows) per visualizzare in tempo
 
 ![Screenshot dell'applicazione](docs/screenshot.png)
 
-## ✨ Caratteristiche
-
+##✨ Caratteristiche
 - **Mappa Interattiva**: Visualizza gli spot su una mappa mondiale basata su Leaflet (OpenStreetMap / Esri).
 - **Dati in tempo reale**: Integrazione con l'API di [Spothole](https://spothole.app) (aggregatore di DX Cluster, RBN, POTA, SOTA).
 - **Filtri Intelligenti**: Filtra gli spot per Banda (160m–6m), Modo (CW, Fonia, Digitale) e Continente dello spotter.
@@ -35,41 +33,33 @@ git clone https://github.com/IZ0FIU/dxcluster-map.git
 cd dxcluster-map
 chmod +x run.sh
 ./run.sh
-Nota per Windows: al momento l'app è testata su Linux. Su Windows è possibile avviarla manualmente creando un
-ambiente virtuale e installando requirements.txt,
-oppure usando python main.py dopo aver installato le dipendenze.
+```
 
-🛠️ Tecnologie utilizzate
-Python: Linguaggio principale.
+>Nota per Windows: al momento l'app è testata su Linux. Su Windows è possibile avviarla manualmente creando un
+>ambiente virtuale e installando requirements.txt,
+>oppure usando python main.py dopo aver installato le dipendenze .
 
-PySide6: Framework Qt per l'interfaccia grafica nativa.
+##🛠️ Tecnologie utilizzate
+**Python**: Linguaggio principale.
+**PySide6**: Framework Qt per l'interfaccia grafica nativa.
+**QtWebEngine**: Motore Chromium integrato per visualizzare la mappa.
+**Leaflet.js**: Libreria JavaScript open-source per mappe interattive.
+**Spothole API**: Fonte dei dati DX Cluster.
 
-QtWebEngine: Motore Chromium integrato per visualizzare la mappa.
+##📡 Note sull'API
+L'applicazione utilizza l'istanza pubblica e gratuita di Spothole. Se intendi usare l'app intensamente o in modo continuativo, si consiglia di ospitare una tua istanza di Spothole e
+modificare l'URL nel file `providers/spothole.py`.
 
-Leaflet.js: Libreria JavaScript open-source per mappe interattive.
-
-Spothole API: Fonte dei dati DX Cluster.
-
-📡 Note sull'API
-L'applicazione utilizza l'istanza pubblica e gratuita di Spothole. Se intendi usare l'app intensamente
-o in modo continuativo, ti consiglio di ospitare una tua istanza di Spothole e
-modificare l'URL nel file providers/spothole.py.
-
-🤝 Contributi
+##🤝 Contributi
 I contributi sono benvenuti! Se trovi un bug o hai un'idea per una nuova funzionalità:
+- Apri una Issue.
+- Fai un Fork del progetto.
+- Crea un Pull Request.
 
-Apri una Issue.
-
-Fai un Fork del progetto.
-
-Crea un Pull Request.
-
-📄 Licenza
+##📄 Licenza
 Questo progetto è distribuito sotto licenza MIT. Vedi il file LICENSE per i dettagli.
 
-☕ Ringraziamenti
+##☕ Ringraziamenti
 A Spothole per l'ottimo servizio di aggregazione spot.
-
 A OpenStreetMap per le tile della mappa.
-
 A Joerg Dietrich per il plugin Leaflet Terminator (Grayline).
