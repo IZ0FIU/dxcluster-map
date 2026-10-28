@@ -35,7 +35,9 @@ git clone https://github.com/IZ0FIU/dxcluster-map.git
 cd dxcluster-map
 chmod +x run.sh
 ./run.sh
-Nota per Windows: al momento l'app è testata su Linux. Su Windows è possibile avviarla manualmente creando un ambiente virtuale e installando requirements.txt, oppure usando python main.py dopo aver installato le dipendenze.
+Nota per Windows: al momento l'app è testata su Linux. Su Windows è possibile avviarla manualmente creando un
+ambiente virtuale e installando requirements.txt,
+oppure usando python main.py dopo aver installato le dipendenze.
 
 🛠️ Tecnologie utilizzate
 Python: Linguaggio principale.
@@ -49,7 +51,8 @@ Leaflet.js: Libreria JavaScript open-source per mappe interattive.
 Spothole API: Fonte dei dati DX Cluster.
 
 📡 Note sull'API
-L'applicazione utilizza l'istanza pubblica e gratuita di Spothole. Se intendi usare l'app intensamente o in modo continuativo, ti consiglio di ospitare una tua istanza di Spothole e modificare l'URL nel file providers/spothole.py.
+L'applicazione utilizza l'istanza pubblica e gratuita di Spothole. Se intendi usare l'app intensamente
+o in modo continuativo, ti consiglio di ospitare una tua istanza di Spothole e modificare l'URL nel file providers/spothole.py.
 
 🤝 Contributi
 I contributi sono benvenuti! Se trovi un bug o hai un'idea per una nuova funzionalità:
