@@ -68,6 +68,9 @@ class Spot:
     source: str = ""
     spotter_continent: Optional[str] = None   # de_continent (chi pubblica)
     dx_continent: Optional[str] = None        # dx_continent (stazione DX)
+    dxcc: Optional[str] = None
+    country: Optional[str] = None  # Nome della nazione (DXCC)
+    source: str = ""
 
     @property
     def id(self) -> str:

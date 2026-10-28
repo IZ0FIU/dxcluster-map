@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QPalette, QColor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMenu, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout, QWidget,
@@ -32,7 +32,6 @@ CONTINENTS = [
     ("Oceania", "OC"),
     ("Antartide", "AN"),
 ]
-
 
 class MainWindow(QMainWindow):
     REFRESH_MS = 60_000
@@ -125,14 +124,19 @@ class MainWindow(QMainWindow):
         alert_row = QHBoxLayout()
         alert_row.addWidget(QLabel("Alert:"))
         self.alert_edit = QLineEdit()
-        self.alert_edit.setPlaceholderText("Nominativi separati da virgola (es. IK2XYZ, W1AW)")
+        self.alert_edit.setPlaceholderText("Nominativi separati da virgola")
         alert_row.addWidget(self.alert_edit, 1)
         side_layout.addLayout(alert_row)
 
-        # Toggle Grayline
-        self.grayline_cb = QCheckBox("Mostra Grayline (giorno/notte)")
+        # Toggle Grayline e Tema (affiancati)
+        options_row = QHBoxLayout()
+        self.grayline_cb = QCheckBox("Grayline")
         self.grayline_cb.setChecked(True)
-        side_layout.addWidget(self.grayline_cb)
+        options_row.addWidget(self.grayline_cb)
+        
+        self.theme_cb = QCheckBox("Tema Scuro")
+        options_row.addWidget(self.theme_cb)
+        side_layout.addLayout(options_row)
 
         # Lista spot
         self.spot_list = SpotList()
@@ -172,6 +176,11 @@ class MainWindow(QMainWindow):
         saved_alerts = settings.value("alerts/list", "", type=str)
         if saved_alerts:
             self.alert_edit.setText(saved_alerts)
+            
+        # Ripristino Tema (default False = chiaro)
+        saved_theme = settings.value("ui/dark_theme", False, type=bool)
+        self.theme_cb.setChecked(saved_theme)
+        self._apply_theme(saved_theme) # Applica subito all'avvio
 
         # --- Connessioni ---
         self.band_combo.currentIndexChanged.connect(self._on_band_changed)
@@ -180,6 +189,7 @@ class MainWindow(QMainWindow):
         self.locator_edit.editingFinished.connect(self._on_locator_changed)
         self.alert_edit.editingFinished.connect(self._on_alerts_changed)
         self.grayline_cb.toggled.connect(self.map.toggle_grayline)
+        self.theme_cb.toggled.connect(self._on_theme_toggled)
         
         self.spot_list.spot_selected.connect(self._on_spot_selected)
 
@@ -208,6 +218,38 @@ class MainWindow(QMainWindow):
         self.alert_timer.start(self.ALERT_CHECK_MS)
 
         self.map.loadFinished.connect(self._on_map_loaded)
+
+    # ---------- Tema ----------
+    def _on_theme_toggled(self, checked):
+        QSettings().setValue("ui/dark_theme", checked)
+        self._apply_theme(checked)
+
+    def _apply_theme(self, is_dark):
+        app = QApplication.instance()
+        if is_dark:
+            # Palette Scura
+            palette = QPalette()
+            palette.setColor(QPalette.Window, QColor(53, 53, 53))
+            palette.setColor(QPalette.WindowText, Qt.white)
+            palette.setColor(QPalette.Base, QColor(25, 25, 25))
+            palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+            palette.setColor(QPalette.ToolTipBase, Qt.black)
+            palette.setColor(QPalette.ToolTipText, Qt.white)
+            palette.setColor(QPalette.Text, Qt.white)
+            palette.setColor(QPalette.Button, QColor(53, 53, 53))
+            palette.setColor(QPalette.ButtonText, Qt.white)
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Link, QColor(42, 130, 218))
+            palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            palette.setColor(QPalette.HighlightedText, Qt.black)
+            app.setPalette(palette)
+        else:
+            # Ripristina palette chiara standard
+            app.setPalette(app.style().standardPalette())
+            
+        # Aggiorna la mappa (se è già caricata, altrimenti lo farà _on_map_loaded)
+        if hasattr(self, 'map'):
+            self.map.set_theme(is_dark)
 
     # ---------- Gestione Orientamento Monitor ----------
     def showEvent(self, event):
@@ -244,6 +286,7 @@ class MainWindow(QMainWindow):
         if not ok: return
         self.map.toggle_grayline(self.grayline_cb.isChecked())
         self.map.set_user_location(self.user_lat, self.user_lng)
+        self.map.set_theme(self.theme_cb.isChecked()) # Assicura che la mappa rispetti il tema scelto
         self.refresh()
 
     def _on_band_changed(self, _index):
@@ -372,6 +415,10 @@ class MainWindow(QMainWindow):
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     app = QApplication(sys.argv)
+    
+    # Usa lo stile Fusion per garantire che le palette scure funzionino su tutti i desktop
+    app.setStyle("Fusion")
+    
     app.setOrganizationName("DXClusterMap")
     app.setApplicationName("DXClusterMap")
     app.setQuitOnLastWindowClosed(False)

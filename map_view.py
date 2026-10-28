@@ -13,19 +13,41 @@ HTML = """<!DOCTYPE html>
     html, body, #map { height: 100%; margin: 0; }
     .dist { margin-top: 6px; padding-top: 6px; border-top: 1px solid #ccc;
             color: #0a5; font-weight: bold; }
+    .country { font-weight: bold; margin-bottom: 4px; color: #555; }
+    .dark-popup .country { color: #ccc; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <script>
     const map = L.map('map', {worldCopyJump: true}).setView([30, 10], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+
+    // --- LAYER MAPPE ---
+    const lightLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 10, attribution: '&copy; OpenStreetMap'
-    }).addTo(map);
+    });
+    
+    const darkLayer = L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 10, attribution: '&copy; Esri &mdash; Esri, DeLorme, NAVTEQ'
+    });
+    
+    let currentLayer = lightLayer;
+    lightLayer.addTo(map);
+
+    window.setTheme = function(isDark) {
+      if (isDark && currentLayer !== darkLayer) {
+        map.removeLayer(currentLayer);
+        darkLayer.addTo(map);
+        currentLayer = darkLayer;
+      } else if (!isDark && currentLayer !== lightLayer) {
+        map.removeLayer(currentLayer);
+        lightLayer.addTo(map);
+        currentLayer = lightLayer;
+      }
+    };
 
     // --- GRAYLINE ---
     let terminator = null;
-
     window.toggleGrayline = function(show) {
       try {
         if (typeof L.terminator !== 'function') return;
@@ -49,7 +71,6 @@ HTML = """<!DOCTYPE html>
     // --- GEOLOCALIZZAZIONE UTENTE ---
     let userLat = null;
     let userLng = null;
-
     window.setUserLocation = function(lat, lng) {
       userLat = lat;
       userLng = lng;
@@ -68,7 +89,6 @@ HTML = """<!DOCTYPE html>
       const y = Math.sin(dlambda) * Math.cos(phi2);
       const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dlambda);
       const az = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-
       return `${dist.toFixed(0)} km — az ${az.toFixed(0)}°`;
     }
 
@@ -79,9 +99,16 @@ HTML = """<!DOCTYPE html>
 
     function buildPopup(s) {
       let distHtml = getDistanceHtml(s);
+      
+      let countryHtml = '';
+      if (s.country) {
+        countryHtml = '<div class="country">' + s.country + '</div>';
+      }
+
       let html =
         '<b>' + s.dx_call + '</b> (' + s.band + ')<br>' +
         s.freq.toFixed(1) + ' kHz ' + s.mode + '<br>' +
+        countryHtml +
         'Spotter: ' + s.spotter + '<br>' +
         (s.dxcc ? 'DXCC: ' + s.dxcc + '<br>' : '') +
         '<small>' + s.timestamp + '</small>';
@@ -136,15 +163,14 @@ class MapView(QWebEngineView):
             "dx_call": s.dx_call, "freq": s.freq_khz,
             "mode": s.mode, "band": s.band,
             "spotter": s.spotter, "dxcc": s.dxcc,
+            "country": getattr(s, 'country', None),
             "color": s.color,
             "timestamp": s.timestamp.strftime("%H:%M UTC"),
         } for s in spots if s.has_coords]
         self.page().runJavaScript(f"window.updateSpots({json.dumps(data)});")
 
     def focus_on(self, spot_id):
-        self.page().runJavaScript(
-            f"window.focusOn({json.dumps(spot_id)});"
-        )
+        self.page().runJavaScript(f"window.focusOn({json.dumps(spot_id)});")
 
     def set_user_location(self, lat, lng):
         lat_str = "null" if lat is None else str(lat)
@@ -155,3 +181,6 @@ class MapView(QWebEngineView):
         self.page().runJavaScript(
             f"if (typeof window.toggleGrayline === 'function') window.toggleGrayline({json.dumps(show)});"
         )
+        
+    def set_theme(self, is_dark):
+        self.page().runJavaScript(f"window.setTheme({json.dumps(is_dark)});")

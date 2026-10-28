@@ -70,6 +70,9 @@ class SpotholeProvider(SpotProvider):
                 or ""
             )
 
+            # Estrazione nazione e bandiera
+            country = item.get("dx_country")
+
             return Spot(
                 spotter=str(spotter),
                 dx_call=str(dx_call),
@@ -80,6 +83,7 @@ class SpotholeProvider(SpotProvider):
                 lat=lat,
                 lng=lng,
                 dxcc=dxcc_name,
+                country=country,
                 source="spothole",
                 spotter_continent=item.get("de_continent"),
                 dx_continent=item.get("dx_continent"),
@@ -87,10 +91,6 @@ class SpotholeProvider(SpotProvider):
         except Exception as e:  # noqa: BLE001
             log.warning("Spot scartato (%s): %s", e, item)
             return None
-
-
-
-
 
     @staticmethod
     def _extract_coords(item: dict) -> Tuple[Optional[float], Optional[float]]:
