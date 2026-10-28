@@ -52,7 +52,8 @@ Spothole API: Fonte dei dati DX Cluster.
 
 📡 Note sull'API
 L'applicazione utilizza l'istanza pubblica e gratuita di Spothole. Se intendi usare l'app intensamente
-o in modo continuativo, ti consiglio di ospitare una tua istanza di Spothole e modificare l'URL nel file providers/spothole.py.
+o in modo continuativo, ti consiglio di ospitare una tua istanza di Spothole e
+modificare l'URL nel file providers/spothole.py.
 
 🤝 Contributi
 I contributi sono benvenuti! Se trovi un bug o hai un'idea per una nuova funzionalità:
