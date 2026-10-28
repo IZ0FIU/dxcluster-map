@@ -35,7 +35,7 @@ git clone https://github.com/IZ0FIU/dxcluster-map.git
 cd dxcluster-map
 chmod +x run.sh
 ./run.sh
-ota per Windows: al momento l'app è testata su Linux. Su Windows è possibile avviarla manualmente creando un ambiente virtuale e installando requirements.txt, oppure usando python main.py dopo aver installato le dipendenze.
+Nota per Windows: al momento l'app è testata su Linux. Su Windows è possibile avviarla manualmente creando un ambiente virtuale e installando requirements.txt, oppure usando python main.py dopo aver installato le dipendenze.
 
 🛠️ Tecnologie utilizzate
 Python: Linguaggio principale.
