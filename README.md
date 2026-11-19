@@ -38,17 +38,27 @@ python3 -m venv .venv
 ./run.sh
 ```
 
-### Release
+### Sviluppo e release
 
-1. Aggiorna `version.py` (es. `2.1.0`)
-2. Commit e tag:
-   ```bash
-   git commit -am "Release 2.1.0"
-   git tag v2.1.0
-   git push origin main --tags
-   ```
-3. GitHub Actions compila automaticamente l'exe Windows e l'archivio Linux
-   e crea la Release con i file allegati.
+Flusso di lavoro: **modifica → test → conferma → pubblicazione**.
+
+```bash
+./check.sh              # compila tutto + smoke test della UI (da fare sempre)
+git add -A && git commit -m "descrizione modifica"
+```
+
+Solo dopo aver verificato che tutto funziona, si pubblica una release:
+
+```bash
+./release.sh 2.1.0      # controlla il repo, esegue i test, aggiorna version.py,
+                        # commit + tag v2.1.0, push e segue la build GitHub Actions
+```
+
+GitHub Actions compila automaticamente l'exe Windows e l'archivio Linux
+e crea la Release con i file allegati.
+
+Le modifiche al codice possono essere pushate su `main` anche senza release
+(non generano build): la build parte **solo** quando si pusha un tag `v*`.
 
 ## Licenza
 
