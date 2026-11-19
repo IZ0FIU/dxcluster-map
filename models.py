@@ -68,9 +68,10 @@ class Spot:
     source: str = ""
     spotter_continent: Optional[str] = None   # de_continent (chi pubblica)
     dx_continent: Optional[str] = None        # dx_continent (stazione DX)
-    dxcc: Optional[str] = None
     country: Optional[str] = None  # Nome della nazione (DXCC)
-    source: str = ""
+    # Paese dello spotter (21)
+    spotter_country: Optional[str] = None
+    spotter_flag: Optional[str] = None
 
     @property
     def id(self) -> str:
@@ -96,3 +97,39 @@ class Spot:
     @property
     def has_continent(self) -> bool:
         return self.spotter_continent is not None
+
+
+# ---------- Alert estesi (20) ----------
+def parse_alert_entries(text: str) -> list:
+    """Parsing degli alert: voci separate da virgola.
+    Formati ammessi:
+      - 'IK1XYZ'          nominativo esatto
+      - 'IK1*' o 'IK1'    prefisso (tutte le stazioni che iniziano con IK1)
+      - 'IK1@20m'         con filtro banda opzionale
+    Ritorna una lista di tuple (base, band) con base in maiuscolo, senza '*'.
+    """
+    entries = []
+    for raw in (text or "").split(","):
+        item = raw.strip().upper()
+        if not item:
+            continue
+        band = None
+        if "@" in item:
+            item, _, band = item.partition("@")
+            band = band.strip() or None
+        item = item.replace("*", "").strip()
+        if item:
+            entries.append((item, band))
+    return entries
+
+
+def spot_matches_alert(spot, entries) -> bool:
+    """True se lo spot corrisponde a una delle voci di alert (20)."""
+    call = (spot.dx_call or "").upper()
+    band = spot.band
+    for base, alert_band in entries:
+        if alert_band and (band or "").lower() != alert_band.lower():
+            continue
+        if call.startswith(base):
+            return True
+    return False

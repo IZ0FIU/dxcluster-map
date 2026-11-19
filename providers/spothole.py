@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
@@ -9,6 +10,9 @@ from .base import SpotProvider
 
 log = logging.getLogger(__name__)
 
+# Sicurezza (6): lunghezza massima dei commenti ricevuti dalla rete
+MAX_COMMENT_LEN = 120
+
 
 class SpotholeProvider(SpotProvider):
     """
@@ -18,21 +22,21 @@ class SpotholeProvider(SpotProvider):
 
     BASE_URL = "https://spothole.app/api/v1"
     TIMEOUT = 15
+    RETRIES = 3
+    USER_AGENT = "DXClusterMap/1.0 (+ham radio spot viewer)"
 
     def __init__(self, endpoint: str = "/spots", extra_params: Optional[dict] = None):
         self.endpoint = endpoint
         self.extra_params = extra_params or {}
+        # Sicurezza (4): sessione con User-Agent identificativo
+        self.session = requests.Session()
+        self.session.headers["User-Agent"] = self.USER_AGENT
 
     def fetch_spots(self, limit: int = 200) -> List[Spot]:
         params = {"limit": limit, **self.extra_params}
         url = f"{self.BASE_URL}{self.endpoint}"
-        try:
-            resp = requests.get(url, params=params, timeout=self.TIMEOUT)
-            resp.raise_for_status()
-            payload = resp.json()
-        except requests.RequestException as e:
-            log.error("Errore fetch Spothole: %s", e)
-            return []
+        resp = self._get(url, params)
+        payload = resp.json()
 
         # Spothole può restituire {"spots": [...]} oppure direttamente una lista
         raw = payload.get("spots", payload) if isinstance(payload, dict) else payload
@@ -41,6 +45,22 @@ class SpotholeProvider(SpotProvider):
         log.info("Ricevuti %d spot (di cui %d con coordinate)",
                  len(spots), sum(1 for s in spots if s.has_coords))
         return spots
+
+    def _get(self, url: str, params: dict) -> requests.Response:
+        """GET con retry esponenziale; le eccezioni SSL/rete risalgono al chiamante."""
+        last_exc = None
+        for attempt in range(self.RETRIES):
+            try:
+                resp = self.session.get(url, params=params, timeout=self.TIMEOUT)
+                resp.raise_for_status()
+                return resp
+            except requests.RequestException as e:
+                last_exc = e
+                if attempt < self.RETRIES - 1:
+                    wait = 2 ** attempt
+                    log.warning("Retry %d/%d fra %ds: %s", attempt + 1, self.RETRIES, wait, e)
+                    time.sleep(wait)
+        raise last_exc
 
     def _to_spot(self, item: dict) -> Optional[Spot]:
         try:
@@ -74,11 +94,12 @@ class SpotholeProvider(SpotProvider):
             country = item.get("dx_country")
 
             return Spot(
-                spotter=str(spotter),
-                dx_call=str(dx_call),
+                spotter=str(spotter)[:16],
+                dx_call=str(dx_call)[:16],
                 freq_khz=freq_khz,
-                mode=str(item.get("mode", "")),
-                comment=str(item.get("comment", "")),
+                mode=str(item.get("mode", ""))[:16],
+                # Sicurezza (6): commenti troncati a lunghezza fissa
+                comment=str(item.get("comment", ""))[:MAX_COMMENT_LEN],
                 timestamp=timestamp,
                 lat=lat,
                 lng=lng,
@@ -87,6 +108,8 @@ class SpotholeProvider(SpotProvider):
                 source="spothole",
                 spotter_continent=item.get("de_continent"),
                 dx_continent=item.get("dx_continent"),
+                spotter_country=(str(item.get("de_country"))[:48] if item.get("de_country") else None),
+                spotter_flag=(str(item.get("de_flag"))[:8] if item.get("de_flag") else None),
             )
         except Exception as e:  # noqa: BLE001
             log.warning("Spot scartato (%s): %s", e, item)

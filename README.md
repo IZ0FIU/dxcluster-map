@@ -1,65 +1,55 @@
+# DX Cluster Map
 
-#📻 DX Cluster Map
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![PySide6](https://img.shields.io/badge/PySide6-6.5%2B-green)
+Mappa interattiva degli spot radioamatoriali: Spothole, WSJT-X (UDP locale) e
+PSK Reporter, con satelliti in tempo reale (TLE CelesTrak), grayline, heatmap,
+alert per nominativo e ponte UDP verso altri programmi (es. WavelogGate).
 
-Un'applicazione desktop cross-platform (Linux/Windows) per visualizzare in tempo reale gli spot del DX Cluster su una mappa mondiale interattiva.
+![versione](https://img.shields.io/badge/versione-2.0.0-ffb02e)
 
-![Screenshot dell'applicazione](docs/screenshot.png)
+## Download
 
-##✨ Caratteristiche
-- **Mappa Interattiva**: Visualizza gli spot su una mappa mondiale basata su Leaflet (OpenStreetMap / Esri).
-- **Dati in tempo reale**: Integrazione con l'API di [Spothole](https://spothole.app) (aggregatore di DX Cluster, RBN, POTA, SOTA).
-- **Filtri Intelligenti**: Filtra gli spot per Banda (160m–6m), Modo (CW, Fonia, Digitale) e Continente dello spotter.
-- **Locator e Distanze**: Calcolo istantaneo della distanza (km) e dell'azimuth in base al tuo locator Maidenhead (es. JN45).
-- **Grayline**: Visualizzazione del terminatore solare (giorno/notte) per capire al volo le finestre di propagazione.
-- **Watchlist (Alert)**: Inserisci i nominativi che ti interessano. Se vengono spottati, riceverai una notifica di sistema (tray icon) e la riga sarà evidenziata.
-- **Tema Chiaro/Scuro**: Interfaccia adattabile con un click, inclusa la mappa.
-- **Layout Adattivo**: L'interfaccia si riorganizza automaticamente se trascinata su un monitor verticale (mappa in alto, lista in basso).
-- **Persistenza**: Tutte le impostazioni (locator, filtri, alert, tema) vengono salvate e ripristinate al riavvio.
+Dalla pagina [Releases](https://github.com/IZ0FIU/dxcluster-map/releases):
 
-## 🚀 Installazione e Avvio
+| Piattaforma | File | Avvio |
+|---|---|---|
+| **Windows 10/11 (64 bit)** | `DXClusterMap-vX.Y.Z-windows-x64.zip` | scompatta e avvia `DXClusterMap.exe` |
+| **Linux** | `DXClusterMap-vX.Y.Z-linux.tar.gz` | scompatta, `pip install -r requirements.txt`, poi `./run.sh` |
 
-### Prerequisiti
-- Python 3.10 o superiore
-- Connessione a Internet (per il fetch degli spot e le tile della mappa)
+Su Windows non serve installare Python: l'eseguibile contiene tutto
+(Python + Qt/PySide6).
 
-### Avvio rapido (Linux)
-Il progetto include uno script di avvio automatico che crea il virtualenv, installa le dipendenze e avvia l'applicazione.
+## Funzioni principali
+
+- **Sorgenti dati**: Spothole (cluster web), WSJT-X via UDP (porta 2237),
+  PSK Reporter (polling ogni 10 minuti con backoff)
+- **Ponte UDP**: inoltro byte-per-byte dei datagrammi WSJT-X ad altri
+  programmi (es. WavelogGate) su una porta separata
+- **Satelliti**: 96 satelliti radioamatoriali con posizione in tempo reale,
+  etichetta e traiettoria orbitale (clic sul marker); cache TLE su disco 24 h
+- **Filtri**: bande, modo, continente dello spotter, età degli spot, alert
+- **Mappa**: grayline, heatmap, legenda bande, distanza/bearing dal proprio locator
+- **Interfaccia**: tema scuro/chiaro, dock spostabili, orologio UTC
+
+## Sviluppo
 
 ```bash
-git clone https://github.com/IZ0FIU/dxcluster-map.git
-cd dxcluster-map
-chmod +x run.sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ./run.sh
 ```
 
->Nota per Windows: al momento l'app è testata su Linux. Su Windows è possibile avviarla manualmente creando un
->ambiente virtuale e installando requirements.txt,
->oppure usando python main.py dopo aver installato le dipendenze .
+### Release
 
-##🛠️ Tecnologie utilizzate
-**Python**: Linguaggio principale.
-**PySide6**: Framework Qt per l'interfaccia grafica nativa.
-**QtWebEngine**: Motore Chromium integrato per visualizzare la mappa.
-**Leaflet.js**: Libreria JavaScript open-source per mappe interattive.
-**Spothole API**: Fonte dei dati DX Cluster.
+1. Aggiorna `version.py` (es. `2.1.0`)
+2. Commit e tag:
+   ```bash
+   git commit -am "Release 2.1.0"
+   git tag v2.1.0
+   git push origin main --tags
+   ```
+3. GitHub Actions compila automaticamente l'exe Windows e l'archivio Linux
+   e crea la Release con i file allegati.
 
-##📡 Note sull'API
-L'applicazione utilizza l'istanza pubblica e gratuita di Spothole. Se intendi usare l'app intensamente o in modo continuativo, si consiglia di ospitare una tua istanza di Spothole e
-modificare l'URL nel file `providers/spothole.py`.
+## Licenza
 
-##🤝 Contributi
-I contributi sono benvenuti! Se trovi un bug o hai un'idea per una nuova funzionalità:
-- Apri una Issue.
-- Fai un Fork del progetto.
-- Crea un Pull Request.
-
-##📄 Licenza
-Questo progetto è distribuito sotto licenza MIT. Vedi il file LICENSE per i dettagli.
-
-##☕ Ringraziamenti
-A Spothole per l'ottimo servizio di aggregazione spot.
-A OpenStreetMap per le tile della mappa.
-A Joerg Dietrich per il plugin Leaflet Terminator (Grayline).
+Uso personale/radioamatoriale. Contatta IZ0FIU per altri usi.

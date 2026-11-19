@@ -1,0 +1,17 @@
+# Ambiente virtuale e cache Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Cache dell'app
+*.log
+
+# File di sistema
+.DS_Store
+Thumbs.db

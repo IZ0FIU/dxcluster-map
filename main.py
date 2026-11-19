@@ -1,25 +1,33 @@
 import logging
+
+from version import __version__
+
+log = logging.getLogger(__name__)
 import signal
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QIcon, QPalette, QColor, QDesktopServices, QFont
+from PySide6.QtGui import QAction, QIcon, QPalette, QColor, QDesktopServices, QFont, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMenu, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout, 
-    QWidget, QStackedWidget, QPushButton, QFormLayout, QToolButton, QWidgetAction
+    QMainWindow, QMenu, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout,
+    QWidget, QStackedWidget, QPushButton, QFormLayout, QToolButton, QWidgetAction,
+    QSlider, QDialog, QTextEdit, QSpinBox, QDialogButtonBox, QScrollArea, QFrame,
+    QDockWidget, QMessageBox
 )
 
-from geo import maidenhead_to_latlon, haversine_km, initial_bearing
-from map_view import MapView
-from models import BANDS
+from geo import (maidenhead_to_latlon, haversine_km, initial_bearing,
+                 maidenhead_square_center, sunrise_sunset)
+from map_view import MapView, valid_call
+from models import BANDS, parse_alert_entries, spot_matches_alert
 from providers.spothole import SpotholeProvider
-from solar_provider import SolarProvider
 from solar_dashboard import SolarDashboard
 from satellite_provider import SatelliteProvider, SatelliteTLE
 from spot_list import SpotList
+from wsjtx_listener import WSJTXListener
+from psk_provider import PSKReporterProvider
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,20 +50,31 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DX Cluster Map")
+        self.setWindowTitle(f"DX Cluster Map v{__version__}")
         self.resize(1400, 850)
 
         # --- Stato ---
         self.provider = SpotholeProvider()
-        self.solar_provider = SolarProvider()
         self.sat_provider = SatelliteProvider()
         self.all_spots = []
         self.current_mode = None
         self.current_continent = None
+        self._map_ready = False   # True quando la pagina Leaflet è pronta
         self.last_refresh_ts = None
         self._notified_ids = set()
         self.current_spot_detail = None
         self.distance_unit = "km"
+
+        # Sorgente dati: "cluster" (Spothole), "wsjtx" (UDP locale) o "pskr"
+        self.data_source = "cluster"
+        self.wsjtx_listener = None
+        self.wsjtx_last_status = {}
+        self.pskr_provider = PSKReporterProvider(
+            QSettings().value("user/pskr_receiver", "IZ0FIU", type=str))
+        self.pskr_timer = QTimer(self)
+        self.pskr_timer.setInterval(10 * 60 * 1000)  # ~1 query ogni 10 min (limite PSKR)
+        self.pskr_timer.timeout.connect(self._on_pskr_timer)
+        self._pskr_backoff_min = 0  # minuti extra prima del prossimo polling
         
         # Stato satelliti
         self.all_tles = []
@@ -91,32 +110,37 @@ class MainWindow(QMainWindow):
         # --- Mappa ---
         self.map = MapView()
 
-        # --- Creazione delle due "Pagine" della Sidebar ---
-        self.sidebar_stack = QStackedWidget()
-        
+        # --- Dock: Spot (sinistro) e Dettaglio (destro) ---
+        self.dock_spot = QDockWidget("Spot", self)
+        self.dock_spot.setObjectName("dockSpot")
+        self.dock_spot.setFeatures(
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
         self.page_list = self._build_list_page()
-        self.sidebar_stack.addWidget(self.page_list)
-        
-        self.page_detail = self._build_detail_page()
-        self.sidebar_stack.addWidget(self.page_detail)
+        self.dock_spot.setWidget(self.page_list)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_spot)
 
-        # --- Layout principale ---
+        self.dock_detail = QDockWidget("Dettaglio stazione", self)
+        self.dock_detail.setObjectName("dockDetail")
+        self.dock_detail.setFeatures(
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
+        self.page_detail = self._build_detail_page()
+        self.dock_detail.setWidget(self.page_detail)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_detail)
+        self.dock_detail.hide()
+
+        # --- Layout principale: banner errori + barra filtri + mappa ---
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         main_layout.addWidget(self.error_banner)
-        
-        self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(self.map)
-        self.splitter.addWidget(self.sidebar_stack)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([1000, 400])
-        main_layout.addWidget(self.splitter, 1)
-        
+        main_layout.addWidget(self._build_filter_bar())
+        main_layout.addWidget(self.map, 1)
+
         self.setCentralWidget(main_widget)
+        self._build_menus()
         self.setStatusBar(QStatusBar())
+        self._build_statusbar()
 
         # --- Ripristino impostazioni e Connessioni ---
         self._restore_settings()
@@ -149,37 +173,64 @@ class MainWindow(QMainWindow):
 
     # ---------- Costruzione UI ----------
     def _build_list_page(self):
+        """Contenuto del dock Spot: dashboard solare + lista spot."""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(6, 6, 6, 6)
 
         self.solar_dashboard = SolarDashboard()
         layout.addWidget(self.solar_dashboard)
-        
-        line = QWidget()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background-color: #ccc;")
-        layout.addWidget(line)
+
+        self.spot_list = SpotList()
+        layout.addWidget(self.spot_list, 1)
+        return page
+
+    def _build_filter_bar(self):
+        """Barra di filtri rapida sopra la mappa (stile chips)."""
+        bar = QWidget()
+        bar.setObjectName("filterBar")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(8, 6, 8, 6)
+        h.setSpacing(6)
+
+        # Sorgente dati (41): Cluster, WSJT-X o PSK Reporter
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("Cluster (Spothole)", userData="cluster")
+        self.source_combo.addItem("WSJT-X (UDP locale)", userData="wsjtx")
+        self.source_combo.addItem("PSK Reporter (ricezioni)", userData="pskr")
+        self.source_combo.setToolTip(
+            "Cluster: dati Spothole — WSJT-X: decodifiche via UDP locale — "
+            "PSK Reporter: le tue ricezioni caricate da WSJT-X (richiede la spunta "
+            "\"Abilita rilevamento PSK Reporter\" in WSJT-X)"
+        )
+        h.addWidget(self.source_combo)
+
+        self.settings_btn = QToolButton()
+        self.settings_btn.setText("⚙")
+        self.settings_btn.setToolTip(
+            "Impostazioni: locator, unità di misura, porta UDP WSJT-X, inoltro "
+            "ad altri programmi (es. WavelogGate) e nominativo PSK Reporter"
+        )
+        self.settings_btn.clicked.connect(self._open_settings)
+        h.addWidget(self.settings_btn)
 
         # Filtro Bande
-        band_row = QHBoxLayout()
-        band_row.addWidget(QLabel("Bande:"))
         self.band_btn = QToolButton()
-        self.band_btn.setText("Tutte")
+        self.band_btn.setText("Bande: Tutte")
         self.band_btn.setPopupMode(QToolButton.InstantPopup)
         self.band_menu = QMenu(self.band_btn)
-        
+
         action_all = self.band_menu.addAction("Seleziona tutte")
         action_all.triggered.connect(self._select_all_bands)
         action_none = self.band_menu.addAction("Deseleziona tutte")
         action_none.triggered.connect(self._select_no_bands)
         self.band_menu.addSeparator()
-        
+
         widget_cb = QWidget()
         layout_cb = QVBoxLayout(widget_cb)
         layout_cb.setContentsMargins(5, 5, 5, 5)
         layout_cb.setSpacing(2)
-        
+
         self.band_checkboxes = {}
         for name, _low, _high in BANDS:
             cb = QCheckBox(name)
@@ -187,103 +238,235 @@ class MainWindow(QMainWindow):
             cb.stateChanged.connect(self._on_band_selection_changed)
             layout_cb.addWidget(cb)
             self.band_checkboxes[name] = cb
-            
+
         widget_action = QWidgetAction(self.band_menu)
         widget_action.setDefaultWidget(widget_cb)
         self.band_menu.addAction(widget_action)
         self.band_btn.setMenu(self.band_menu)
-        band_row.addWidget(self.band_btn, 1)
-        layout.addLayout(band_row)
+        h.addWidget(self.band_btn)
 
         # Menu Satelliti (inizialmente vuoto, si popola dopo il fetch)
-        sat_row = QHBoxLayout()
-        sat_row.addWidget(QLabel("Satelliti:"))
         self.sat_btn = QToolButton()
-        self.sat_btn.setText("Nessuno")
+        self.sat_btn.setText("Satelliti: Nessuno")
         self.sat_btn.setPopupMode(QToolButton.InstantPopup)
         self.sat_menu = QMenu(self.sat_btn)
         self.sat_btn.setMenu(self.sat_menu)
-        sat_row.addWidget(self.sat_btn, 1)
-        layout.addLayout(sat_row)
+        h.addWidget(self.sat_btn)
 
         # Filtro Modo
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Modo:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Tutti", userData=None)
-        self.mode_combo.addItem("CW", userData="CW")
-        self.mode_combo.addItem("Fonia", userData="PHONE")
-        self.mode_combo.addItem("Digitale", userData="DIGITAL")
-        mode_row.addWidget(self.mode_combo, 1)
-        layout.addLayout(mode_row)
+        self.mode_combo.addItem("Modo: Tutti", userData=None)
+        self.mode_combo.addItem("Modo: CW", userData="CW")
+        self.mode_combo.addItem("Modo: Fonia", userData="PHONE")
+        self.mode_combo.addItem("Modo: Digitale", userData="DIGITAL")
+        h.addWidget(self.mode_combo)
 
         # Filtro Continente
-        cont_row = QHBoxLayout()
-        cont_row.addWidget(QLabel("Spotter:"))
         self.cont_combo = QComboBox()
         for label, code in CONTINENTS:
             self.cont_combo.addItem(label, userData=code)
-        cont_row.addWidget(self.cont_combo, 1)
-        layout.addLayout(cont_row)
+        h.addWidget(self.cont_combo)
 
-        # Locator e Unità di misura
-        loc_row = QHBoxLayout()
-        loc_row.addWidget(QLabel("Locator:"))
+        # Target locator (16): analisi della rotta
+        self.target_edit = QLineEdit()
+        self.target_edit.setPlaceholderText("Target KM04")
+        self.target_edit.setMaxLength(6)
+        self.target_edit.setFixedWidth(110)
+        self.target_edit.setToolTip("Locator di destinazione per l'analisi della rotta")
+        h.addWidget(self.target_edit)
+        self.target_info = QLabel("")
+        self.target_info.setStyleSheet("color: #888; font-size: 11px;")
+        self.target_info.setWordWrap(False)
+        h.addWidget(self.target_info)
+
+        # Alert
+        self.alert_edit = QLineEdit()
+        self.alert_edit.setPlaceholderText("🔔 Alert: nominativi, virgola")
+        self.alert_edit.setFixedWidth(180)
+        self.alert_edit.setToolTip("Evidenzia ed avvisa per questi nominativi (Ctrl+F)")
+        h.addWidget(self.alert_edit)
+
+        h.addStretch(1)
+        self.source_status_label = QLabel("")
+        self.source_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        h.addWidget(self.source_status_label)
+        self._build_settings_dialog()
+        return bar
+
+    def _build_settings_dialog(self):
+        """Dialogo ⚙ Impostazioni: locator, unità, porta UDP, inoltro, PSKR."""
+        self.settings_dialog = QDialog(self)
+        self.settings_dialog.setWindowTitle("Impostazioni")
+        form = QFormLayout(self.settings_dialog)
+
+        form.addRow(QLabel("Stazione"))
         self.locator_edit = QLineEdit()
         self.locator_edit.setPlaceholderText("es. JN45")
         self.locator_edit.setMaxLength(6)
-        loc_row.addWidget(self.locator_edit, 2)
-        
+        form.addRow("Locator:", self.locator_edit)
+        form.addRow(self.locator_status_label)
+
         self.unit_combo = QComboBox()
         self.unit_combo.addItem("km", userData="km")
         self.unit_combo.addItem("miglia", userData="mi")
-        loc_row.addWidget(self.unit_combo, 1)
-        
-        layout.addLayout(loc_row)
-        layout.addWidget(self.locator_status_label)
+        form.addRow("Unità distanza:", self.unit_combo)
 
-        # Alert
-        alert_row = QHBoxLayout()
-        alert_row.addWidget(QLabel("Alert:"))
-        self.alert_edit = QLineEdit()
-        self.alert_edit.setPlaceholderText("Nominativi separati da virgola")
-        alert_row.addWidget(self.alert_edit, 1)
-        layout.addLayout(alert_row)
+        self.pskr_edit = QLineEdit()
+        self.pskr_edit.setMaxLength(16)
+        self.pskr_edit.setText(QSettings().value("user/pskr_receiver", "IZ0FIU", type=str))
+        self.pskr_edit.setToolTip(
+            "Nominativo ricevitore per la sorgente \"PSK Reporter\":\n"
+            "le ricezioni caricate da WSJT-X con questa spunta attiva"
+        )
+        form.addRow(QLabel("Sorgenti"))
+        form.addRow("Nominativo PSK Reporter:", self.pskr_edit)
 
-        # Opzioni
-        options_row = QHBoxLayout()
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1024, 65535)
+        self.port_spin.setValue(QSettings().value("source/wsjtx_port", 2237, type=int))
+        self.port_spin.setToolTip(
+            "Porta UDP su cui l'app riceve le decodifiche di WSJT-X\n"
+            "(Settings > Reporting > UDP Server di WSJT-X)"
+        )
+        form.addRow("Porta UDP WSJT-X:", self.port_spin)
+
+        self.relay_edit = QLineEdit()
+        self.relay_edit.setPlaceholderText("127.0.0.1:2238")
+        self.relay_edit.setToolTip(
+            "Inoltra a questi destinatari ogni datagramma ricevuto da WSJT-X,\n"
+            "inalterato (host:porta, separati da virgola).\n"
+            "Serve quando WSJT-X invia all'app ma un altro programma\n"
+            "(es. WavelogGate) deve continuare a ricevere gli stessi dati:\n"
+            "quel programma va però spostato su una porta diversa."
+        )
+        self.relay_edit.setText(QSettings().value("source/relay_targets", "", type=str))
+        form.addRow("Inoltra a:", self.relay_edit)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._apply_settings)
+        btns.rejected.connect(self._cancel_settings)
+        form.addRow(btns)
+
+    def _build_menus(self):
+        mb = self.menuBar()
+
+        # File
+        m_file = mb.addMenu("&File")
+        act_stats = QAction("📊 Statistiche", self)
+        act_stats.triggered.connect(self._show_statistics)
+        m_file.addAction(act_stats)
+        m_file.addSeparator()
+        act_quit = QAction("Esci", self)
+        act_quit.setShortcut(QKeySequence("Ctrl+Q"))
+        act_quit.triggered.connect(QApplication.instance().quit)
+        m_file.addAction(act_quit)
+
+        # Vista
+        m_view = mb.addMenu("&Vista")
+        self.theme_cb = QCheckBox("Tema scuro")
+        self.legend_cb = QCheckBox("Legenda sulla mappa")
+        self.heat_cb = QCheckBox("Heatmap")
+        self.heat_cb.setToolTip("Densità di spot per quadrato griglia (26)")
         self.grayline_cb = QCheckBox("Grayline")
         self.grayline_cb.setChecked(True)
-        options_row.addWidget(self.grayline_cb)
-        self.theme_cb = QCheckBox("Tema Scuro")
-        options_row.addWidget(self.theme_cb)
-        self.new_spots_cb = QCheckBox("Solo nuovi (5m)")
-        options_row.addWidget(self.new_spots_cb)
-        layout.addLayout(options_row)
+        for cb in (self.theme_cb, self.legend_cb, self.heat_cb, self.grayline_cb):
+            self._add_menu_widget(m_view, cb)
+        m_view.addSeparator()
+        act_fullmap = QAction("Solo mappa (F11)", self)
+        act_fullmap.triggered.connect(self._toggle_full_map)
+        m_view.addAction(act_fullmap)
 
-        self.spot_list = SpotList()
-        layout.addWidget(self.spot_list, 1)
-        return page
+        # Filtri
+        m_filters = mb.addMenu("&Filtri")
+        self.new_spots_cb = QCheckBox("Solo spot nuovi")
+        self._add_menu_widget(m_filters, self.new_spots_cb)
+        age_widget = QWidget()
+        ah = QHBoxLayout(age_widget)
+        ah.setContentsMargins(8, 2, 8, 2)
+        ah.addWidget(QLabel("Età max \u00abnuovi\u00bb:"))
+        # Slider età massima spot (10): da 1 a 30 minuti
+        self.age_slider = QSlider(Qt.Horizontal)
+        self.age_slider.setRange(1, 30)
+        self.age_slider.setValue(5)
+        self.age_slider.setToolTip("Età massima degli spot \"nuovi\" (minuti)")
+        ah.addWidget(self.age_slider, 1)
+        self.age_label = QLabel("5m")
+        ah.addWidget(self.age_label)
+        self._add_menu_widget(m_filters, age_widget)
+        m_filters.addSeparator()
+        act_alerts = QAction("🔔 Modifica alert… (Ctrl+F)", self)
+        act_alerts.triggered.connect(self._focus_alert_edit)
+        m_filters.addAction(act_alerts)
+
+        # Satelliti
+        m_sat = mb.addMenu("🛰 &Satelliti")
+        act_sat_all = QAction("Seleziona tutti", self)
+        act_sat_all.triggered.connect(self._select_all_sats)
+        act_sat_none = QAction("Deseleziona tutti", self)
+        act_sat_none.triggered.connect(self._select_no_sats)
+        m_sat.addAction(act_sat_all)
+        m_sat.addAction(act_sat_none)
+        m_sat.addSeparator()
+        act_sat_pick = QAction("Cerca e seleziona…", self)
+        act_sat_pick.triggered.connect(self._open_sat_menu)
+        m_sat.addAction(act_sat_pick)
+
+        # Impostazioni
+        m_settings = mb.addMenu("&Impostazioni")
+        act_settings = QAction("⚙ Apri impostazioni…", self)
+        act_settings.triggered.connect(self._open_settings)
+        m_settings.addAction(act_settings)
+
+        # Aiuto
+        m_help = mb.addMenu("&Aiuto")
+        act_about = QAction("Informazioni", self)
+        act_about.triggered.connect(self._show_about)
+        m_help.addAction(act_about)
+
+    def _add_menu_widget(self, menu, widget):
+        """Inserisce un widget (checkbox, slider…) dentro un menu."""
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(widget)
+        menu.addAction(action)
+
+    def _open_sat_menu(self):
+        self.sat_btn.showMenu()
+
+    def _build_statusbar(self):
+        self.status_relay = QLabel("")
+        self.status_relay.setStyleSheet("color: #888;")
+        self.statusBar().addPermanentWidget(self.status_relay)
+        self.status_utc = QLabel("")
+        self.status_utc.setStyleSheet("color: #4fc3f7; font-weight: bold;")
+        self.statusBar().addPermanentWidget(self.status_utc)
+        relay = QSettings().value("source/relay_targets", "", type=str)
+        if relay:
+            self.status_relay.setText(f"Ponte → {relay}")
+
+    def _show_about(self):
+        QMessageBox.about(
+            self, "Informazioni",
+            f"<b>DX Cluster Map</b> v{__version__}<br>"
+            "Spot radioamatoriali su mappa.<br>"
+            "Sorgenti: Spothole, WSJT-X (UDP), PSK Reporter.<br>"
+            "Satelliti: elementi orbitali CelesTrak (aggiornati ogni 6 h).<br>"
+            "<small>IZ0FIU — <a href='https://github.com/IZ0FIU/dxcluster-map'>"
+            "github.com/IZ0FIU/dxcluster-map</a></small>")
 
     def _build_detail_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        self.btn_back = QPushButton("← Torna alla lista")
-        self.btn_back.setFont(QFont("", -1, QFont.Bold))
-        self.btn_back.clicked.connect(self._back_to_list)
-        layout.addWidget(self.btn_back)
-
-        layout.addSpacing(10)
-
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
-        
+
         self.lbl_dx_call = QLabel("—")
         font = QFont()
         font.setPointSize(18)
         font.setBold(True)
+        font.setFamily("Monospace")
         self.lbl_dx_call.setFont(font)
         form.addRow("Stazione DX:", self.lbl_dx_call)
 
@@ -314,12 +497,22 @@ class MainWindow(QMainWindow):
         layout.addSpacing(20)
 
         self.btn_qrz = QPushButton("Cerca su QRZ.com")
-        self.btn_qrz.setStyleSheet("padding: 8px; background-color: #007bff; color: white; border-radius: 4px;")
+        self.btn_qrz.setStyleSheet(
+            "padding: 8px; background-color: #ffb02e; color: #111; "
+            "font-weight: bold; border: none; border-radius: 6px;")
         self.btn_qrz.clicked.connect(self._open_qrz)
         layout.addWidget(self.btn_qrz)
 
+        # Condivisione spot (23)
+        self.btn_copy = QPushButton("📋 Copia info spot")
+        self.btn_copy.setToolTip("Copia le informazioni dello spot negli appunti (23)")
+        self.btn_copy.clicked.connect(self._copy_spot_info)
+        layout.addWidget(self.btn_copy)
+
         layout.addStretch(1)
         return page
+
+
 
     # ---------- Logica Filtro Bande ----------
     def _get_selected_bands(self):
@@ -353,33 +546,70 @@ class MainWindow(QMainWindow):
     def _populate_sat_menu(self, tles):
         self.sat_menu.clear()
         self.sat_checkboxes.clear()
-        
+
         saved_sats = QSettings().value("filters/satellites", ["ISS (ZARYA)", "SO-50"], type=list)
-        
-        # Aggiungi azioni rapide
+        # QSettings può restituire una stringa singola ("ISS (ZARYA)") invece
+        # di una lista: normalizziamo, altrimenti nessuna spunta viene salvata.
+        if isinstance(saved_sats, str):
+            saved_sats = [saved_sats]
+        saved_sats = {str(x) for x in (saved_sats or [])}
+        if not saved_sats:
+            # Chiave @Invalid() (lista vuota salvata in passato): QSettings
+            # restituisce [] ignorando il default → usa ISS come default.
+            saved_sats = {"ISS (ZARYA)"}
+            QSettings().setValue("filters/satellites", sorted(saved_sats))
+
+        # Ordine alfabetico per facilitare la ricerca
+        tles = sorted(tles, key=lambda t: t.name.lower())
+
         action_all = self.sat_menu.addAction("Seleziona tutti")
         action_all.triggered.connect(self._select_all_sats)
-        action_none = self.sat_menu.addAction("Deseleziona tutti")
+        action_none = self.sat_menu.addAction("Deseleziona tutte")
         action_none.triggered.connect(self._select_no_sats)
         self.sat_menu.addSeparator()
 
-        widget_cb = QWidget()
-        layout_cb = QVBoxLayout(widget_cb)
-        layout_cb.setContentsMargins(5, 5, 5, 5)
-        layout_cb.setSpacing(2)
+        # Campo di ricerca per nome
+        self.sat_filter_edit = QLineEdit()
+        self.sat_filter_edit.setPlaceholderText("cerca satellite…")
+        self.sat_filter_edit.setClearButtonEnabled(True)
+        filter_action = QWidgetAction(self.sat_menu)
+        filter_action.setDefaultWidget(self.sat_filter_edit)
+        self.sat_menu.addAction(filter_action)
 
+        # Elenco scorrevole dei satelliti
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(5, 5, 5, 5)
+        v.setSpacing(2)
+        self.sat_checkboxes = {}
         for tle in tles:
             cb = QCheckBox(tle.name)
+            cb.blockSignals(True)   # evita 96 chiamate a update durante il popolamento
             cb.setChecked(tle.name in saved_sats)
+            cb.blockSignals(False)
             cb.stateChanged.connect(self._on_sat_selection_changed)
-            layout_cb.addWidget(cb)
+            v.addWidget(cb)
             self.sat_checkboxes[tle.name] = cb
+        v.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidget(container)
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(420)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        self.sat_filter_edit.textChanged.connect(self._filter_sat_menu)
 
         widget_action = QWidgetAction(self.sat_menu)
-        widget_action.setDefaultWidget(widget_cb)
+        widget_action.setDefaultWidget(scroll)
         self.sat_menu.addAction(widget_action)
-        
+
         self._on_sat_selection_changed()
+
+    def _filter_sat_menu(self, text):
+        """Nasconde i satelliti che non corrispondono al testo cercato."""
+        text = text.strip().lower()
+        for name, cb in self.sat_checkboxes.items():
+            cb.setVisible(text in name.lower())
 
     def _get_selected_sats(self):
         return {name for name, cb in self.sat_checkboxes.items() if cb.isChecked()}
@@ -405,7 +635,10 @@ class MainWindow(QMainWindow):
         else:
             self.sat_btn.setText(f"{len(selected)} satelliti")
             
-        QSettings().setValue("filters/satellites", list(selected))
+        # Non salvare liste vuote: QSettings le scrive come @Invalid() e alla
+        # lettura successiva restituisce None/[] ignorando il default.
+        if selected:
+            QSettings().setValue("filters/satellites", sorted(selected))
         self.map.update_satellites(self.all_tles, self.selected_sats)
 
     def _update_satellites(self):
@@ -414,7 +647,9 @@ class MainWindow(QMainWindow):
             self.all_tles = tles
             if not self.sat_checkboxes:
                 self._populate_sat_menu(tles)
-            else:
+            elif getattr(self, "_map_ready", False):
+                # Aggiorna la mappa solo se la pagina è pronta, altrimenti
+                # la chiamata JS andrebbe persa (la ripeterà _on_map_loaded)
                 self.map.update_satellites(self.all_tles, self.selected_sats)
 
     # ---------- Logica Master-Detail ----------
@@ -424,7 +659,12 @@ class MainWindow(QMainWindow):
         self.lbl_country.setText(spot.country or "Sconosciuta")
         self.lbl_freq.setText(f"{spot.freq_khz:.1f} kHz ({spot.band})")
         self.lbl_mode.setText(spot.mode)
-        self.lbl_spotter.setText(spot.spotter)
+        spotter_text = spot.spotter or "—"
+        spotter_country = getattr(spot, "spotter_country", None)
+        if spotter_country:
+            flag = getattr(spot, "spotter_flag", None) or ""
+            spotter_text = f"{flag} {spotter_text}\n{spotter_country}".strip()
+        self.lbl_spotter.setText(spotter_text)
         self.lbl_time.setText(spot.timestamp.strftime("%H:%M UTC"))
         
         if self.user_lat is not None and spot.has_coords:
@@ -441,16 +681,26 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_distance.setText("Locator non impostato")
 
-        self.lbl_comment.setText(spot.comment or "Nessun commento")
-        self.sidebar_stack.setCurrentIndex(1)
+        self.lbl_comment.setTextFormat(Qt.PlainText)
+        self.lbl_comment.setText((spot.comment or "Nessun commento")[:200])
+        self.dock_detail.show()
+        self.dock_detail.raise_()
 
     def _back_to_list(self):
-        self.sidebar_stack.setCurrentIndex(0)
+        self.dock_detail.hide()
+        self.dock_spot.show()
+        self.dock_spot.raise_()
 
     def _open_qrz(self):
-        if self.current_spot_detail:
-            url = f"https://www.qrz.com/db/{self.current_spot_detail.dx_call}"
-            QDesktopServices.openUrl(QUrl(url))
+        if not self.current_spot_detail:
+            return
+        call = (self.current_spot_detail.dx_call or "").strip().upper()
+        # Sicurezza (3): i nominativi arrivano da una API esterna; apriamo QRZ
+        # solo se il nominativo è plausibile, per non costruire URL arbitrari.
+        if valid_call(call):
+            QDesktopServices.openUrl(QUrl(f"https://www.qrz.com/db/{call}"))
+        else:
+            self.statusBar().showMessage(f"Nominativo non valido, link QRZ bloccato: {call!r}", 5000)
 
     # ---------- Ripristino e Connessioni ----------
     def _restore_settings(self):
@@ -504,12 +754,39 @@ class MainWindow(QMainWindow):
 
         saved_new_spots = settings.value("filters/new_spots", False, type=bool)
         self.new_spots_cb.setChecked(saved_new_spots)
+
+        saved_minutes = settings.value("filters/new_minutes", 5, type=int)
+        self.age_slider.blockSignals(True)
+        self.age_slider.setValue(max(1, min(30, saved_minutes)))
+        self.age_slider.blockSignals(False)
+        self.age_label.setText(f"{self.age_slider.value()}m")
+
+        saved_legend = settings.value("ui/map_legend", False, type=bool)
+        self.legend_cb.setChecked(saved_legend)
+
+        saved_heat = settings.value("ui/heatmap", False, type=bool)
+        self.heat_cb.setChecked(saved_heat)
+
+        # Geometria finestra e dock (14)
+        geo = settings.value("ui/geometry")
+        if geo is not None:
+            self.restoreGeometry(geo)
+        state = settings.value("ui/dock_state")
+        if state is not None:
+            self.restoreState(state)
         
         saved_unit = settings.value("ui/distance_unit", "km", type=str)
         idx = self.unit_combo.findData(saved_unit)
         if idx >= 0: self.unit_combo.setCurrentIndex(idx)
         self.distance_unit = saved_unit
         self.map.set_distance_unit(self.distance_unit)
+
+        # Sorgente dati salvata (41): cluster o wsjtx
+        saved_source = settings.value("source/data_source", "cluster", type=str)
+        idx = self.source_combo.findData(saved_source)
+        if idx >= 0: self.source_combo.setCurrentIndex(idx)
+        self.data_source = self.source_combo.currentData() or "cluster"
+        self._activate_source(self.data_source)
 
     def _connect_signals(self):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -519,16 +796,24 @@ class MainWindow(QMainWindow):
         self.grayline_cb.toggled.connect(self.map.toggle_grayline)
         self.theme_cb.toggled.connect(self._on_theme_toggled)
         self.new_spots_cb.toggled.connect(self._on_new_spots_toggled)
+        self.age_slider.valueChanged.connect(self._on_age_changed)
+        self.legend_cb.toggled.connect(self._on_legend_toggled)
+        self.heat_cb.toggled.connect(self._on_heat_toggled)
+        self.target_edit.editingFinished.connect(self._on_target_changed)
         self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        self.port_spin.valueChanged.connect(self._on_wsjtx_port_changed)
         self.spot_list.spot_selected.connect(self._on_spot_selected)
+
+        # --- Scorciatoie (15) ---
+        QShortcut(QKeySequence("F5"), self, activated=self.refresh)
+        QShortcut(QKeySequence("Escape"), self, activated=self._on_escape)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self._focus_alert_edit)
+        QShortcut(QKeySequence("F11"), self, activated=self._toggle_full_map)
 
     # ---------- Eventi ----------
     def _update_solar(self):
-        data = self.solar_provider.fetch()
-        self.solar_dashboard.update_data(
-            data.sfi, data.a_index, data.k_index, 
-            data.band_conditions, data.geomag_field, data.signal_noise
-        )
+        self.solar_dashboard.refresh()
 
     def _show_error(self, message):
         self.error_banner.setText(f"⚠️ {message}")
@@ -552,6 +837,119 @@ class MainWindow(QMainWindow):
         QSettings().setValue("filters/new_spots", checked)
         self._apply_filter()
 
+    def _on_age_changed(self, value):
+        self.age_label.setText(f"{value}m")
+        QSettings().setValue("filters/new_minutes", value)
+        self._apply_filter()
+
+    # --- Mappa a schermo intero (8): nasconde i dock ---
+    def _toggle_full_map(self):
+        docks_visible = self.dock_spot.isVisible() or self.dock_detail.isVisible()
+        if docks_visible:
+            self.dock_spot.hide()
+            self.dock_detail.hide()
+        else:
+            self.dock_spot.show()
+        self.map.setFocus()
+
+    def _on_escape(self):
+        if self.dock_detail.isVisible():
+            self._back_to_list()
+        elif not (self.dock_spot.isVisible() or self.dock_detail.isVisible()):
+            self._toggle_full_map()
+
+    def _focus_alert_edit(self):
+        self.dock_spot.show()
+        self.alert_edit.setFocus()
+        self.alert_edit.selectAll()
+
+    # ---------- Copia info spot (23) ----------
+    def _copy_spot_info(self):
+        s = self.current_spot_detail
+        if not s:
+            return
+        lines = [
+            f"DX: {s.dx_call} — {s.freq_khz:.1f} kHz ({s.band}, {s.mode})",
+            f"Spotter: {s.spotter}",
+            f"Ora: {s.timestamp:%d/%m/%Y %H:%M} UTC",
+        ]
+        if s.country:
+            lines.append(f"Nazione: {s.country}")
+        if self.user_lat is not None and s.has_coords:
+            dist = haversine_km(self.user_lat, self.user_lng, s.lat, s.lng)
+            az = initial_bearing(self.user_lat, self.user_lng, s.lat, s.lng)
+            if self.distance_unit == "mi":
+                dist *= 0.621371
+            lines.append(f"Distanza: {dist:.0f} — az {az:.0f}°")
+        if s.comment:
+            lines.append(f"Commento: {s.comment[:120]}")
+        if valid_call((s.dx_call or "").strip().upper()):
+            lines.append(f"QRZ: https://www.qrz.com/db/{s.dx_call.strip().upper()}")
+        QApplication.clipboard().setText("\n".join(lines))
+        self.statusBar().showMessage("Informazioni spot copiate negli appunti", 3000)
+
+    # ---------- Statistiche (19) ----------
+    def _show_statistics(self):
+        from collections import Counter
+
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.SPOT_TTL_SECONDS)
+        spots = [s for s in self.all_spots if s.timestamp >= cutoff]
+
+        by_band = Counter(s.band for s in spots)
+        by_spotter = Counter(s.spotter.upper() for s in spots if s.spotter)
+        by_country = Counter(s.country for s in spots if s.country)
+        by_mode = Counter(s.mode_category for s in spots)
+
+        lines = [f"Spot in memoria (ultimi {self.SPOT_TTL_SECONDS // 60} minuti): {len(spots)}", ""]
+
+        lines.append("— Per banda —")
+        for band, n in sorted(by_band.items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {band}: {n}")
+        lines.append("")
+        lines.append("— Per modo —")
+        for mode, n in sorted(by_mode.items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {mode}: {n}")
+        lines.append("")
+        lines.append("— Top 5 spotter —")
+        for name, n in by_spotter.most_common(5):
+            lines.append(f"  {name}: {n} spot")
+        lines.append("")
+        lines.append("— Top 5 nazioni DX —")
+        for name, n in by_country.most_common(5):
+            lines.append(f"  {name}: {n} spot")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Statistiche sessione")
+        lay = QVBoxLayout(dlg)
+        text = QTextEdit()
+        text.setPlainText("\n".join(lines))
+        text.setReadOnly(True)
+        lay.addWidget(text)
+        dlg.resize(360, 480)
+        dlg.show()
+
+    def _on_legend_toggled(self, checked):
+        QSettings().setValue("ui/map_legend", checked)
+        self.map.toggle_legend(checked)
+
+    def _on_heat_toggled(self, checked):
+        QSettings().setValue("ui/heatmap", checked)
+        self.map.toggle_heat(checked)
+        self._apply_filter()
+
+    def _update_heat(self, filtered):
+        """Heatmap per quadrato griglia (26): un punto per centro del quadrato
+        4 caratteri di ogni spot. Peso minimo 0.5: sotto 0.2 il layer non
+        visualizza quasi nulla, quindi partiamo da una base visibile."""
+        counts = {}
+        for s in filtered:
+            if not s.has_coords:
+                continue
+            key = maidenhead_square_center(s.lat, s.lng)
+            counts[key] = counts.get(key, 0) + 1
+        points = [[c[0], c[1], min(0.5 + 0.1 * v, 1.0)] for c, v in counts.items()]
+        self.map.update_heat(points)
+
     def _apply_theme(self, is_dark):
         app = QApplication.instance()
         if is_dark:
@@ -570,8 +968,65 @@ class MainWindow(QMainWindow):
             palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
             palette.setColor(QPalette.HighlightedText, Qt.black)
             app.setPalette(palette)
+            # Tema scuro "dashboard": antracite + accento ambra (9)
+            app.setStyleSheet("""
+                QMainWindow, QDialog, QWidget { color: #e8e8ea; background: #1e1f24; }
+                QLineEdit, QComboBox QAbstractItemView {
+                    background: #26272d; color: #e8e8ea;
+                    border: 1px solid #45474d; border-radius: 6px; padding: 3px 6px;
+                    selection-background-color: #ffb02e; selection-color: #111;
+                }
+                QComboBox { background: #2b2d33; color: #e8e8ea;
+                            border: 1px solid #45474d; border-radius: 6px; padding: 3px 8px; }
+                QComboBox::drop-down { border: none; width: 20px; }
+                QComboBox QAbstractItemView {
+                    background: #26272d; border: 1px solid #45474d;
+                    selection-background-color: #ffb02e; selection-color: #111;
+                }
+                QTableWidget {
+                    background: #26272d; alternate-background-color: #2b2d33;
+                    color: #d6d7db; gridline-color: #2e3036; border: none;
+                }
+                QTableWidget::item:selected { background: rgba(255,176,46,0.20); color: #fff; }
+                QHeaderView::section {
+                    background: #232529; color: #9a9ca3; border: none;
+                    padding: 4px 6px; font-size: 10px; letter-spacing: 0.5px;
+                }
+                QMenu { background: #26272d; color: #e8e8ea; border: 1px solid #45474d; }
+                QMenu::item:selected { background: #ffb02e; color: #111; }
+                QMenu::separator { height: 1px; background: #3a3c42; margin: 3px 6px; }
+                QMenuBar { background: #20222a; color: #c9cace; }
+                QMenuBar::item:selected { background: #33363f; border-radius: 4px; }
+                QStatusBar { background: #191b20; color: #9a9ca3; }
+                QDockWidget { color: #9a9ca3; font-size: 11px; }
+                QDockWidget::title {
+                    background: #2b2d33; padding: 5px 10px;
+                    border-bottom: 1px solid #34363c; text-transform: uppercase;
+                }
+                QToolButton {
+                    background: #2b2d33; color: #e8e8ea; border: 1px solid #45474d;
+                    border-radius: 6px; padding: 4px 10px;
+                }
+                QToolButton:hover { border-color: #ffb02e; }
+                QPushButton {
+                    background: #2b2d33; color: #e8e8ea; border: 1px solid #45474d;
+                    border-radius: 6px; padding: 5px 12px;
+                }
+                QPushButton:hover { border-color: #ffb02e; }
+                QScrollBar:vertical, QScrollBar:horizontal {
+                    background: #232529; width: 10px; height: 10px; border: none;
+                }
+                QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+                    background: #45474d; border-radius: 5px; min-height: 20px; min-width: 20px;
+                }
+                QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+                QCheckBox { color: #c9cace; spacing: 6px; }
+                QToolTip { background: #26272d; color: #eee; border: 1px solid #45474d; }
+                #filterBar { background: #232529; border-bottom: 1px solid #34363c; }
+            """)
         else:
             app.setPalette(app.style().standardPalette())
+            app.setStyleSheet("")
         if hasattr(self, 'map'):
             self.map.set_theme(is_dark)
 
@@ -583,6 +1038,15 @@ class MainWindow(QMainWindow):
             self.screen().geometryChanged.connect(self._update_layout_orientation)
             QTimer.singleShot(100, self._update_layout_orientation)
 
+    def closeEvent(self, event):
+        # Salvataggio geometria + stato dock (14) e stop del listener WSJT-X
+        settings = QSettings()
+        settings.setValue("ui/geometry", self.saveGeometry())
+        settings.setValue("ui/dock_state", self.saveState())
+        if self.wsjtx_listener is not None:
+            self.wsjtx_listener.stop()
+        super().closeEvent(event)
+
     def _on_screen_changed(self, screen):
         self._update_layout_orientation()
         try:
@@ -591,24 +1055,29 @@ class MainWindow(QMainWindow):
         self.screen().geometryChanged.connect(self._update_layout_orientation)
 
     def _update_layout_orientation(self):
+        """In verticale (schermo ruotato) sposta il dock spot sotto la mappa."""
         screen = self.screen()
         if not screen: return
         geo = screen.geometry()
         is_portrait = geo.height() > geo.width()
-        target_orientation = Qt.Vertical if is_portrait else Qt.Horizontal
-        if self.splitter.orientation() != target_orientation:
-            self.splitter.setOrientation(target_orientation)
-            if target_orientation == Qt.Horizontal:
-                self.splitter.setSizes([1000, 400])
-            else:
-                self.splitter.setSizes([600, 400])
+        if is_portrait:
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.dock_spot)
+        else:
+            self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_spot)
 
     def _on_map_loaded(self, ok):
         if not ok: return
+        self._map_ready = True
         self.map.toggle_grayline(self.grayline_cb.isChecked())
         self.map.set_user_location(self.user_lat, self.user_lng)
         self.map.set_theme(self.theme_cb.isChecked())
         self.map.set_distance_unit(self.distance_unit)
+        self.map.toggle_legend(self.legend_cb.isChecked())
+        self.map.toggle_heat(self.heat_cb.isChecked())
+        # I satelliti scaricati PRIMA del caricamento della pagina andavano
+        # persi (la chiamata JS finiva su una pagina non pronta): ripetiamola.
+        if self.all_tles:
+            self.map.update_satellites(self.all_tles, self.selected_sats)
         self.refresh()
 
     def _on_mode_changed(self, _index):
@@ -647,22 +1116,60 @@ class MainWindow(QMainWindow):
         QSettings().setValue("alerts/list", text)
         self._apply_filter()
 
+    # ---------- Target locator (16) ----------
+    def _on_target_changed(self):
+        text = self.target_edit.text().strip().upper()
+        settings = QSettings()
+        if not text:
+            self.target_info.setText("")
+            settings.remove("user/target_locator")
+            self.map.clear_route()
+            return
+        try:
+            t_lat, t_lng = maidenhead_to_latlon(text)
+        except ValueError as e:
+            self.target_info.setText(f"⚠ {e}")
+            return
+        settings.setValue("user/target_locator", text)
+
+        parts = [f"Target {text}"]
+        if self.user_lat is not None:
+            dist = haversine_km(self.user_lat, self.user_lng, t_lat, t_lng)
+            az = initial_bearing(self.user_lat, self.user_lng, t_lat, t_lng)
+            if self.distance_unit == "mi":
+                dist *= 0.621371; unit = "mi"
+            else:
+                unit = "km"
+            parts.append(f"distanza {dist:.0f} {unit}, az {az:.0f}°")
+
+        rise, set_ = sunrise_sunset(t_lat, t_lng)
+        if rise is None and set_ is None:
+            parts.append("sole sempre su/giù (zona polare)")
+        else:
+            if rise is not None and set_ is not None:
+                now = datetime.now(timezone.utc)
+                is_day = rise <= now <= set_ if rise < set_ else (now >= rise or now <= set_)
+                tag = "☀ giorno" if is_day else "🌙 notte"
+                parts.append(f"alba {rise:%H:%M}, tramonto {set_:%H:%M} UTC ({tag})")
+
+        self.target_info.setText(" — ".join(parts))
+        self.map.show_route(t_lat, t_lng)
+
     def _on_spot_selected(self, spot):
         self.map.focus_on(spot.id)
         self._show_spot_details(spot)
 
     # ---------- Dati e Alert ----------
-    def _get_alert_calls(self) -> set:
-        raw = self.alert_edit.text()
-        if not raw.strip(): return set()
-        return set(c.strip().upper() for c in raw.split(",") if c.strip())
+    def _get_alert_entries(self) -> list:
+        """Voci alert estese: prefissi, '*' e filtro @banda (20)."""
+        return parse_alert_entries(self.alert_edit.text())
 
     def _check_alerts(self):
-        alert_calls = self._get_alert_calls()
-        if not alert_calls: return
+        alert_entries = self._get_alert_entries()
+        if not alert_entries: return
         new_alerts = []
         for s in self.all_spots:
-            if s.dx_call.upper() in alert_calls and s.id not in self._notified_ids:
+            if spot_matches_alert(s, alert_entries) and s.id not in self._notified_ids:
                 new_alerts.append(s)
                 self._notified_ids.add(s.id)
         if new_alerts:
@@ -672,7 +1179,231 @@ class MainWindow(QMainWindow):
             self.tray_icon.showMessage("🚨 DX Alert!", msg, QSystemTrayIcon.MessageIcon.Information, 5000)
             QApplication.beep()
 
+    # ---------- Sorgente dati: Cluster o WSJT-X (41) ----------
+    def _on_source_changed(self, _index):
+        source = self.source_combo.currentData() or "cluster"
+        QSettings().setValue("source/data_source", source)
+        self._activate_source(source)
+
+    def _activate_source(self, source):
+        self.data_source = source
+        # Ferma tutto ciò che non è la sorgente scelta
+        if hasattr(self, "timer"):
+            self.timer.stop()
+        self._stop_wsjtx_listener()
+        if self.data_source == "wsjtx":
+            self._start_wsjtx_listener()
+            self.source_status_label.setText(
+                f"WSJT-X in ascolto su UDP :{self.port_spin.value()} — in attesa di decodifiche…"
+            )
+            self._prune_spots()
+            self._apply_filter()
+        elif self.data_source == "pskr":
+            self.pskr_provider.receiver_callsign = QSettings().value(
+                "user/pskr_receiver", "IZ0FIU", type=str)
+            self.source_status_label.setText(
+                f"PSK Reporter: ricezioni di {self.pskr_provider.receiver_callsign} "
+                "(aggiornamento ogni 10 minuti)…"
+            )
+            self._on_pskr_timer()
+            self.pskr_timer.start()
+        else:  # cluster
+            self.source_status_label.setText("")
+            if hasattr(self, "timer"):
+                self.timer.start(self.REFRESH_MS)
+                self.refresh()
+
+    def _on_pskr_timer(self):
+        spots, error = self.pskr_provider.fetch(minutes=30)
+        if error:
+            if "rate limit" in error.lower():
+                # Backoff progressivo: +10 min per ogni 429 (max 40 min).
+                # Il timer regolare resta fermo: scheduliamo la ripresa
+                # manualmente per allungare l'intervallo.
+                self._pskr_backoff_min = min(40, max(10, self._pskr_backoff_min + 10))
+                self.pskr_timer.stop()
+                QTimer.singleShot(self._pskr_backoff_min * 60 * 1000, self._pskr_resume)
+                self.source_status_label.setStyleSheet("color: #e3a008; font-size: 11px;")
+                self.source_status_label.setText(
+                    f"⚠ PSK Reporter: rate limit (429) — riprovo tra {self._pskr_backoff_min} minuti")
+                return
+            self.source_status_label.setStyleSheet("color: #dc3545; font-size: 11px;")
+            self.source_status_label.setText(f"⚠ PSK Reporter: {error}")
+            return
+        # Successo: azzera il backoff
+        self._pskr_backoff_min = 0
+        self.source_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        if spots:
+            self._prune_spots()
+            known = {s.id for s in self.all_spots}
+            fresh = [s for s in spots if s.id not in known]
+            self.all_spots.extend(fresh)
+            if len(self.all_spots) > self.MAX_SPOTS_IN_MEMORY:
+                self.all_spots.sort(key=lambda s: s.timestamp, reverse=True)
+                self.all_spots = self.all_spots[: self.MAX_SPOTS_IN_MEMORY]
+            self.last_refresh_ts = time.monotonic()
+            self.source_status_label.setText(
+                f"PSK Reporter: {len(self.all_spots)} ricezioni di "
+                f"{self.pskr_provider.receiver_callsign} (aggiorno ogni 10 minuti)"
+            )
+            self._apply_filter()
+        else:
+            self.source_status_label.setText(
+                f"PSK Reporter: nessuna ricezione negli ultimi 30 minuti "
+                f"(controlla la spunta \"Abilita rilevamento PSK Reporter\" in WSJT-X "
+                f"e l'attività della banda)"
+            )
+
+    def _pskr_resume(self):
+        """Riprende il polling regolare dopo un backoff (429)."""
+        if self.data_source == "pskr":
+            self.pskr_timer.start()
+            self._on_pskr_timer()
+
+    @staticmethod
+    def _parse_relay_targets(text: str):
+        """"127.0.0.1:2238, 10.0.0.5:2237" -> [(host, porta), ...]"""
+        targets = []
+        for part in (text or "").replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            host, _sep, port = part.rpartition(":")
+            if not host or not port.isdigit():
+                continue
+            targets.append((host.strip(), int(port)))
+        return targets
+
+    def _on_relay_changed(self):
+        QSettings().setValue("source/relay_targets", self.relay_edit.text().strip())
+        # Riavvia il listener per applicare i nuovi destinatari
+        if self.data_source == "wsjtx":
+            self._stop_wsjtx_listener()
+            self._start_wsjtx_listener()
+            self.source_status_label.setText(
+                f"WSJT-X in ascolto su UDP :{self.port_spin.value()} — in attesa di decodifiche…"
+            )
+
+    # ---------- Dialogo Impostazioni ----------
+    def _open_settings(self):
+        self.settings_dialog.show()
+
+    def _apply_settings(self):
+        """OK: applica e salva locator, unità, porta, inoltro e nominativo PSKR."""
+        self._on_locator_changed()
+        self._on_relay_changed()
+        self._on_wsjtx_port_changed(self.port_spin.value())
+        self._on_unit_changed(self.unit_combo.currentIndex())
+        pskr = self.pskr_edit.text().strip().upper()
+        QSettings().setValue("user/pskr_receiver", pskr)
+        self.pskr_provider.receiver_callsign = pskr
+        if self.data_source == "pskr":
+            self._on_pskr_timer()   # aggiorna subito con il nuovo nominativo
+        self.settings_dialog.accept()
+
+    def _cancel_settings(self):
+        """Annulla: ripristina i valori salvati nei campi."""
+        s = QSettings()
+        self.locator_edit.setText(s.value("user/locator", "", type=str))
+        self.pskr_edit.setText(s.value("user/pskr_receiver", "IZ0FIU", type=str))
+        self.relay_edit.setText(s.value("source/relay_targets", "", type=str))
+        self.port_spin.setValue(s.value("source/wsjtx_port", 2237, type=int))
+        idx = self.unit_combo.findData(s.value("ui/distance_unit", "km", type=str))
+        if idx >= 0:
+            self.unit_combo.setCurrentIndex(idx)
+        self.settings_dialog.reject()
+
+    def _start_wsjtx_listener(self):
+        port = self.port_spin.value()
+        targets = self._parse_relay_targets(self.relay_edit.text())
+        self.wsjtx_listener = WSJTXListener(port, relay_targets=targets)
+        if targets:
+            log.info("Ponte UDP: inoltro verso %s", ", ".join(f"{h}:{p}" for h, p in targets))
+        self.wsjtx_listener.decode_received.connect(self._on_wsjtx_decode)
+        self.wsjtx_listener.status_received.connect(self._on_wsjtx_status)
+        self.wsjtx_listener.listening_changed.connect(
+            self._on_wsjtx_listening, Qt.QueuedConnection)
+
+    def _stop_wsjtx_listener(self):
+        if self.wsjtx_listener is not None:
+            try:
+                self.wsjtx_listener.decode_received.disconnect()
+                self.wsjtx_listener.status_received.disconnect()
+                self.wsjtx_listener.listening_changed.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            self.wsjtx_listener.stop()
+            self.wsjtx_listener.deleteLater()
+            self.wsjtx_listener = None
+
+    def _on_wsjtx_port_changed(self, value):
+        QSettings().setValue("source/wsjtx_port", value)
+        # Riavvia il listener se siamo in modalità WSJT-X
+        if self.data_source == "wsjtx":
+            self._stop_wsjtx_listener()
+            self._start_wsjtx_listener()
+            self.source_status_label.setText(
+                f"WSJT-X in ascolto su UDP :{value} — in attesa di decodifiche…"
+            )
+
+    def _on_wsjtx_listening(self, ok, err=""):
+        if ok:
+            self.source_status_label.setStyleSheet("color: #888; font-size: 11px;")
+            self.source_status_label.setText(
+                f"WSJT-X in ascolto su UDP :{self.port_spin.value()} — in attesa di decodifiche…"
+            )
+        else:
+            self.source_status_label.setStyleSheet("color: #dc3545; font-size: 11px; font-weight: bold;")
+            self.source_status_label.setText(
+                f"❌ Porta UDP {self.port_spin.value()} occupata da un altro programma "
+                f"({err}). Chiudi l'altro programma oppure cambia porta qui e in WSJT-X "
+                f"(Settings > Reporting > UDP Server)."
+            )
+
+    def _on_wsjtx_decode(self, spot):
+        """Nuova decodifica FT8/FT4/JT... via UDP (41)."""
+        self._prune_spots()
+        if len(self.all_spots) >= self.MAX_SPOTS_IN_MEMORY:
+            self.all_spots.sort(key=lambda s: s.timestamp, reverse=True)
+            self.all_spots = self.all_spots[: self.MAX_SPOTS_IN_MEMORY - 1]
+        self.all_spots.append(spot)
+        self.last_refresh_ts = time.monotonic()
+        self._apply_filter()
+
+    def _on_wsjtx_status(self, info):
+        self.wsjtx_last_status = info
+        dial = info.get("dial_hz")
+        parts = [f"WSJT-X in ascolto su UDP :{self.port_spin.value()}"]
+        if dial:
+            parts.append(f"dial {dial / 1000:.1f} kHz")
+        if info.get("de_call"):
+            parts.append(f"DE {info['de_call']}")
+        if info.get("de_grid"):
+            parts.append(f"griglia {info['de_grid']}")
+        parts.append(f"{info.get('decodes', 0)} decodifiche")
+        parts.append(f"{info.get('datagrams', 0)} datagrammi")
+        if self.wsjtx_listener and self.wsjtx_listener.relay_targets:
+            parts.append(f"{self.wsjtx_listener.forwarded_count} inoltrati → "
+                         + ", ".join(f"{h}:{p}" for h, p in self.wsjtx_listener.relay_targets))
+        self.source_status_label.setText(" — ".join(parts))
+
+    def _prune_spots(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.SPOT_TTL_SECONDS)
+        kept = [s for s in self.all_spots if s.timestamp >= cutoff]
+        if len(kept) > self.MAX_SPOTS_IN_MEMORY:
+            kept.sort(key=lambda s: s.timestamp, reverse=True)
+            kept = kept[: self.MAX_SPOTS_IN_MEMORY]
+        self.all_spots = kept
+
     def refresh(self):
+        # In modalità WSJT-X/PSKR la rete cluster non viene interrogata (41).
+        if self.data_source == "wsjtx":
+            self._prune_spots()
+            self._apply_filter()
+            return
+        if self.data_source == "pskr":
+            self._on_pskr_timer()
+            return
         selected_bands = self._get_selected_bands()
         extra = {}
         
@@ -710,10 +1441,11 @@ class MainWindow(QMainWindow):
     def _apply_filter(self):
         filtered = self._current_filtered_view()
         filtered = sorted(filtered, key=lambda s: s.timestamp, reverse=True)
-        alert_calls = self._get_alert_calls()
-        self.spot_list.set_alerts(alert_calls)
+        alert_entries = self._get_alert_entries()
+        self.spot_list.set_alerts(alert_entries)
         self.map.update_spots(filtered)
         self.spot_list.set_spots(filtered)
+        self._update_heat(filtered)
         self._update_status()
 
     def _current_filtered_view(self):
@@ -729,7 +1461,7 @@ class MainWindow(QMainWindow):
             filtered = [s for s in filtered if s.spotter_continent == self.current_continent]
         
         if self.new_spots_cb.isChecked():
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.age_slider.value())
             filtered = [s for s in filtered if s.timestamp >= cutoff]
 
         return filtered
@@ -749,13 +1481,15 @@ class MainWindow(QMainWindow):
         parts = [band_str]
         if self.current_mode: parts.append(self.current_mode)
         if self.current_continent: parts.append(f"spotter {self.current_continent}")
-        if self.new_spots_cb.isChecked(): parts.append("solo nuovi (5m)")
+        if self.new_spots_cb.isChecked(): parts.append(f"solo nuovi ({self.age_slider.value()}m)")
         label = " / ".join(parts)
         
         age = f"{int(time.monotonic() - self.last_refresh_ts)}s fa" if self.last_refresh_ts else "—"
         self.statusBar().showMessage(
             f"{len(filtered)} spot ({with_coords} sulla mappa) — {label} — aggiornato {age}"
         )
+        # Orologio UTC (0): sempre visibile nella barra di stato
+        self.status_utc.setText(f"{datetime.now(timezone.utc):%H:%M} UTC")
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
