@@ -185,39 +185,44 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.spot_list, 1)
         return page
 
+    def _labeled_field(self, text, widget):
+        """Campo con etichetta sopra il controllo: la barra si spiega da sola."""
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(1)
+        label = QLabel(text)
+        label.setObjectName("fieldLabel")
+        v.addWidget(label)
+        v.addWidget(widget)
+        return box
+
     def _build_filter_bar(self):
-        """Barra di filtri rapida sopra la mappa (stile chips)."""
+        """Barra di filtri rapida sopra la mappa, con etichette esplicite."""
         bar = QWidget()
         bar.setObjectName("filterBar")
         h = QHBoxLayout(bar)
-        h.setContentsMargins(8, 6, 8, 6)
-        h.setSpacing(6)
+        h.setContentsMargins(8, 4, 8, 6)
+        h.setSpacing(8)
 
         # Sorgente dati (41): Cluster, WSJT-X o PSK Reporter
         self.source_combo = QComboBox()
         self.source_combo.addItem("Cluster (Spothole)", userData="cluster")
         self.source_combo.addItem("WSJT-X (UDP locale)", userData="wsjtx")
         self.source_combo.addItem("PSK Reporter (ricezioni)", userData="pskr")
+        self.source_combo.setMinimumWidth(170)
         self.source_combo.setToolTip(
             "Cluster: dati Spothole — WSJT-X: decodifiche via UDP locale — "
             "PSK Reporter: le tue ricezioni caricate da WSJT-X (richiede la spunta "
             "\"Abilita rilevamento PSK Reporter\" in WSJT-X)"
         )
-        h.addWidget(self.source_combo)
-
-        self.settings_btn = QToolButton()
-        self.settings_btn.setText("⚙")
-        self.settings_btn.setToolTip(
-            "Impostazioni: locator, unità di misura, porta UDP WSJT-X, inoltro "
-            "ad altri programmi (es. WavelogGate) e nominativo PSK Reporter"
-        )
-        self.settings_btn.clicked.connect(self._open_settings)
-        h.addWidget(self.settings_btn)
+        h.addWidget(self._labeled_field("Modalità operativa", self.source_combo))
 
         # Filtro Bande
         self.band_btn = QToolButton()
-        self.band_btn.setText("Bande: Tutte")
+        self.band_btn.setText("Tutte")
         self.band_btn.setPopupMode(QToolButton.InstantPopup)
+        self.band_btn.setToolTip("Bande da mostrare sulla mappa")
         self.band_menu = QMenu(self.band_btn)
 
         action_all = self.band_menu.addAction("Seleziona tutte")
@@ -243,48 +248,56 @@ class MainWindow(QMainWindow):
         widget_action.setDefaultWidget(widget_cb)
         self.band_menu.addAction(widget_action)
         self.band_btn.setMenu(self.band_menu)
-        h.addWidget(self.band_btn)
+        h.addWidget(self._labeled_field("Bande", self.band_btn))
 
         # Menu Satelliti (inizialmente vuoto, si popola dopo il fetch)
         self.sat_btn = QToolButton()
-        self.sat_btn.setText("Satelliti: Nessuno")
+        self.sat_btn.setText("Nessuno")
         self.sat_btn.setPopupMode(QToolButton.InstantPopup)
+        self.sat_btn.setToolTip("Satelliti da mostrare sulla mappa")
         self.sat_menu = QMenu(self.sat_btn)
         self.sat_btn.setMenu(self.sat_menu)
-        h.addWidget(self.sat_btn)
+        h.addWidget(self._labeled_field("Satelliti", self.sat_btn))
 
         # Filtro Modo
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Modo: Tutti", userData=None)
-        self.mode_combo.addItem("Modo: CW", userData="CW")
-        self.mode_combo.addItem("Modo: Fonia", userData="PHONE")
-        self.mode_combo.addItem("Modo: Digitale", userData="DIGITAL")
-        h.addWidget(self.mode_combo)
+        self.mode_combo.addItem("Tutti", userData=None)
+        self.mode_combo.addItem("CW", userData="CW")
+        self.mode_combo.addItem("Fonia", userData="PHONE")
+        self.mode_combo.addItem("Digitale", userData="DIGITAL")
+        self.mode_combo.setMinimumWidth(110)
+        h.addWidget(self._labeled_field("Modi", self.mode_combo))
 
         # Filtro Continente
         self.cont_combo = QComboBox()
         for label, code in CONTINENTS:
             self.cont_combo.addItem(label, userData=code)
-        h.addWidget(self.cont_combo)
+        self.cont_combo.setMinimumWidth(130)
+        h.addWidget(self._labeled_field("Spot da", self.cont_combo))
 
         # Target locator (16): analisi della rotta
         self.target_edit = QLineEdit()
-        self.target_edit.setPlaceholderText("Target KM04")
+        self.target_edit.setPlaceholderText("es. KM04")
         self.target_edit.setMaxLength(6)
         self.target_edit.setFixedWidth(110)
         self.target_edit.setToolTip("Locator di destinazione per l'analisi della rotta")
-        h.addWidget(self.target_edit)
         self.target_info = QLabel("")
         self.target_info.setStyleSheet("color: #888; font-size: 11px;")
         self.target_info.setWordWrap(False)
-        h.addWidget(self.target_info)
+        tgt_box = QWidget()
+        tgt_h = QHBoxLayout(tgt_box)
+        tgt_h.setContentsMargins(0, 0, 0, 0)
+        tgt_h.setSpacing(6)
+        tgt_h.addWidget(self.target_edit)
+        tgt_h.addWidget(self.target_info)
+        h.addWidget(self._labeled_field("Rotta verso", tgt_box))
 
         # Alert
         self.alert_edit = QLineEdit()
-        self.alert_edit.setPlaceholderText("🔔 Alert: nominativi, virgola")
-        self.alert_edit.setFixedWidth(180)
+        self.alert_edit.setPlaceholderText("nominativi, separati da virgola")
+        self.alert_edit.setFixedWidth(190)
         self.alert_edit.setToolTip("Evidenzia ed avvisa per questi nominativi (Ctrl+F)")
-        h.addWidget(self.alert_edit)
+        h.addWidget(self._labeled_field("Avvisi", self.alert_edit))
 
         h.addStretch(1)
         self.source_status_label = QLabel("")
@@ -1021,6 +1034,7 @@ class MainWindow(QMainWindow):
                 }
                 QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
                 QCheckBox { color: #c9cace; spacing: 6px; }
+                #fieldLabel { color: #8d9099; font-size: 10px; margin-left: 2px; }
                 QToolTip { background: #26272d; color: #eee; border: 1px solid #45474d; }
                 #filterBar { background: #232529; border-bottom: 1px solid #34363c; }
             """)
