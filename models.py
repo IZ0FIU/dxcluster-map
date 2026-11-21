@@ -72,6 +72,8 @@ class Spot:
     # Paese dello spotter (21)
     spotter_country: Optional[str] = None
     spotter_flag: Optional[str] = None
+    # True se la decodifica WSJT-X è indirizzata al nostro nominativo
+    calling_me: bool = False
 
     @property
     def id(self) -> str:

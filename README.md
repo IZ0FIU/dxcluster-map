@@ -26,6 +26,14 @@ Su Windows non serve installare Python: l'eseguibile contiene tutto
   programmi (es. WavelogGate) su una porta separata
 - **Satelliti**: 96 satelliti radioamatoriali con posizione in tempo reale,
   etichetta e traiettoria orbitale (clic sul marker); cache TLE su disco 24 h
+- **Passaggi satelliti** (`F10`): previsione AOS/LOS, elevazione massima,
+  azimut e **polar plot** del passaggio in corso o successivo (SGP4)
+- **Worked-before da log ADIF**: legge `wsjtx_log.adi`, marca **B4** gli spot
+  già a log e segnala **NUOVO** (nuova entità DXCC) e **BANDA** (nuova banda);
+  ricarica automatica quando WSJT-X aggiorna il log
+- **Avvisi sonori e vocali**: suoni distinti per alert, nuovo DXCC e
+  "ti sta chiamando" (decodifiche WSJT-X col proprio nominativo), con sintesi
+  vocale e notifica di sistema
 - **Filtri**: bande, modo, continente dello spotter, età degli spot, alert
 - **Mappa**: grayline, heatmap, legenda bande, distanza/bearing dal proprio locator
 - **Interfaccia**: tema scuro/chiaro, dock spostabili, orologio UTC

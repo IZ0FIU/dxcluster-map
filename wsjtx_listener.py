@@ -104,11 +104,13 @@ class WSJTXListener(QObject):
 
     DEFAULT_PORT = 2238
 
-    def __init__(self, port: int = DEFAULT_PORT, relay_targets=None):
+    def __init__(self, port: int = DEFAULT_PORT, relay_targets=None,
+                 my_call: str = ""):
         super().__init__()
         self.dial_hz = None
         self.de_call = ""
         self.de_grid = ""
+        self.my_call = (my_call or "").strip().upper()
         self.decode_count = 0
         self.datagram_count = 0
         self.forwarded_count = 0
@@ -257,7 +259,8 @@ class WSJTXListener(QObject):
             return
 
         freq_khz = (self.dial_hz + delta_freq) / 1000.0
-        dx_call, dx_grid = self._extract_call_and_grid(message)
+        dx_call, dx_grid, calling_me = self._extract_call_and_grid(
+            message, self.my_call or self.de_call)
         if not dx_call:
             return
 
@@ -292,17 +295,21 @@ class WSJTXListener(QObject):
             lng=lng,
             country=country,
             source="wsjtx",
+            calling_me=calling_me,
         )
         self.decode_received.emit(spot)
 
     @staticmethod
-    def _extract_call_and_grid(message: str):
-        """Estrae il nominativo DX e l'eventuale locator dal testo della
-        decodifica. I messaggi tipici sono:
+    def _extract_call_and_grid(message: str, my_call: str = ""):
+        """Estrae il nominativo DX, l'eventuale locator e se ci stanno
+        chiamando. I messaggi tipici sono:
           'CQ IK1XYZ JN45' / 'CQ DX 3A/ABC JM45' / 'IK1XYZ W1ABC R-05'
-        Il primo nominativo valido dopo gli eventuali token CQ/DE è il DX.
+        Se il nostro nominativo compare nel messaggio (e non è un CQ) la
+        stazione ci sta chiamando: il DX è l'altro nominativo.
         """
         tokens = message.strip().split()
+        my = (my_call or "").strip().upper()
+        is_cq = bool(tokens) and tokens[0].upper().rstrip("*").startswith(("CQ", "QRZ"))
         dx_call = None
         skipped = set()
         # salta i token CQ/CQDX/CQXXX/DE della parte iniziale
@@ -313,11 +320,20 @@ class WSJTXListener(QObject):
                 tokens = tokens[1:]
                 continue
             break
+
+        candidates = []
         for tok in tokens:
             t = tok.upper().rstrip("*.,")
             if t not in skipped and _looks_like_call(t):
-                dx_call = t
-                break
+                candidates.append(t)
+        calling_me = bool(my and not is_cq and my in candidates)
+        if calling_me:
+            # il DX è l'altro nominativo (quello che ci chiama)
+            dx_call = next((c for c in candidates if c != my), None)
+        elif candidates:
+            dx_call = candidates[0]
+        else:
+            dx_call = None
 
         m = None
         for cand in GRID_RE.finditer(message):
@@ -331,4 +347,4 @@ class WSJTXListener(QObject):
         # evita di confondere un locator col nominativo quando è subito dopo
         if grid and grid.upper() == (dx_call or "").upper():
             grid = None
-        return dx_call, grid
+        return dx_call, grid, calling_me

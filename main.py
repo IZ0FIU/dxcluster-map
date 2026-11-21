@@ -1,4 +1,5 @@
 import logging
+import os
 
 from version import __version__
 
@@ -15,14 +16,18 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenu, QSplitter, QStatusBar, QSystemTrayIcon, QVBoxLayout,
     QWidget, QStackedWidget, QPushButton, QFormLayout, QToolButton, QWidgetAction,
     QSlider, QDialog, QTextEdit, QSpinBox, QDialogButtonBox, QScrollArea, QFrame,
-    QDockWidget, QMessageBox
+    QDockWidget, QMessageBox, QFileDialog
 )
 
+from adif_log import (AdifLog, NEW_BAND, NEW_CALL, NEW_COUNTRY, WORKED,
+                      default_adif_path)
+from alerts_audio import AlertSounds
 from geo import (maidenhead_to_latlon, haversine_km, initial_bearing,
                  maidenhead_square_center, sunrise_sunset)
 from map_view import MapView, valid_call
 from models import BANDS, parse_alert_entries, spot_matches_alert
 from providers.spothole import SpotholeProvider
+from satellite_passes_dialog import SatellitePassesDialog
 from solar_dashboard import SolarDashboard
 from satellite_provider import SatelliteProvider, SatelliteTLE
 from spot_list import SpotList
@@ -64,6 +69,13 @@ class MainWindow(QMainWindow):
         self._notified_ids = set()
         self.current_spot_detail = None
         self.distance_unit = "km"
+
+        # Log ADIF per worked-before e avvisi sonori/vocali
+        self.adif = AdifLog()
+        self.adif_path = (QSettings().value("log/adif_path", "", type=str)
+                          or default_adif_path())
+        self.alert_sounds = AlertSounds(self)
+        self.passes_dialog = None
 
         # Sorgente dati: "cluster" (Spothole), "wsjtx" (UDP locale) o "pskr"
         self.data_source = "cluster"
@@ -158,6 +170,12 @@ class MainWindow(QMainWindow):
         self.alert_timer = QTimer(self)
         self.alert_timer.timeout.connect(self._check_alerts)
         self.alert_timer.start(self.ALERT_CHECK_MS)
+
+        # Ricarica automatica del log ADIF quando il file cambia (WSJT-X lo
+        # aggiorna a ogni QSO registrato).
+        self.adif_timer = QTimer(self)
+        self.adif_timer.timeout.connect(self._check_adif_changed)
+        self.adif_timer.start(60_000)
 
         self.solar_timer = QTimer(self)
         self.solar_timer.timeout.connect(self._update_solar)
@@ -307,7 +325,7 @@ class MainWindow(QMainWindow):
         return bar
 
     def _build_settings_dialog(self):
-        """Dialogo ⚙ Impostazioni: locator, unità, porta UDP, inoltro, PSKR."""
+        """Dialogo ⚙ Impostazioni: stazione, log ADIF, avvisi, sorgenti."""
         self.settings_dialog = QDialog(self)
         self.settings_dialog.setWindowTitle("Impostazioni")
         form = QFormLayout(self.settings_dialog)
@@ -319,11 +337,60 @@ class MainWindow(QMainWindow):
         form.addRow("Locator:", self.locator_edit)
         form.addRow(self.locator_status_label)
 
+        self.callsign_edit = QLineEdit()
+        self.callsign_edit.setMaxLength(16)
+        self.callsign_edit.setPlaceholderText("es. IZ0FIU")
+        self.callsign_edit.setToolTip(
+            "Il tuo nominativo: serve a riconoscere le stazioni che ti chiamano "
+            "e a personalizzare gli avvisi vocali")
+        form.addRow("Nominativo:", self.callsign_edit)
+
         self.unit_combo = QComboBox()
         self.unit_combo.addItem("km", userData="km")
         self.unit_combo.addItem("miglia", userData="mi")
         form.addRow("Unità distanza:", self.unit_combo)
 
+        form.addRow(QLabel("Log ADIF (worked-before)"))
+        adif_row = QWidget()
+        adif_layout = QHBoxLayout(adif_row)
+        adif_layout.setContentsMargins(0, 0, 0, 0)
+        self.adif_path_edit = QLineEdit()
+        self.adif_path_edit.setPlaceholderText("es. ~/.local/share/WSJT-X/wsjtx_log.adi")
+        self.adif_path_edit.setToolTip(
+            "Log ADIF di WSJT-X: gli spot già a log vengono marcati B4 e i "
+            "nuovi DXCC/bande sono evidenziati")
+        adif_layout.addWidget(self.adif_path_edit, 1)
+        self.adif_browse_btn = QPushButton("Sfoglia…")
+        self.adif_browse_btn.clicked.connect(self._browse_adif)
+        adif_layout.addWidget(self.adif_browse_btn)
+        form.addRow("File ADIF:", adif_row)
+
+        self.adif_status_label = QLabel("")
+        self.adif_status_label.setStyleSheet("color: #8d9099; font-size: 11px;")
+        self.adif_status_label.setWordWrap(True)
+        form.addRow(self.adif_status_label)
+
+        form.addRow(QLabel("Avvisi"))
+        self.sound_cb = QCheckBox("Segnale sonoro")
+        self.voice_cb = QCheckBox("Voce (sintesi vocale)")
+        form.addRow(self.sound_cb)
+        form.addRow(self.voice_cb)
+
+        audio_row = QWidget()
+        audio_layout = QHBoxLayout(audio_row)
+        audio_layout.setContentsMargins(0, 0, 0, 0)
+        audio_layout.addWidget(QLabel("Volume:"))
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(70)
+        self.volume_slider.setToolTip("Volume degli avvisi sonori")
+        audio_layout.addWidget(self.volume_slider, 1)
+        self.audio_test_btn = QPushButton("Prova")
+        self.audio_test_btn.clicked.connect(self._test_audio)
+        audio_layout.addWidget(self.audio_test_btn)
+        form.addRow(audio_row)
+
+        form.addRow(QLabel("Sorgenti"))
         self.pskr_edit = QLineEdit()
         self.pskr_edit.setMaxLength(16)
         self.pskr_edit.setText(QSettings().value("user/pskr_receiver", "IZ0FIU", type=str))
@@ -331,7 +398,6 @@ class MainWindow(QMainWindow):
             "Nominativo ricevitore per la sorgente \"PSK Reporter\":\n"
             "le ricezioni caricate da WSJT-X con questa spunta attiva"
         )
-        form.addRow(QLabel("Sorgenti"))
         form.addRow("Nominativo PSK Reporter:", self.pskr_edit)
 
         self.port_spin = QSpinBox()
@@ -369,6 +435,10 @@ class MainWindow(QMainWindow):
         act_stats = QAction("📊 Statistiche", self)
         act_stats.triggered.connect(self._show_statistics)
         m_file.addAction(act_stats)
+        act_reload_adif = QAction("🔄 Ricarica log ADIF", self)
+        act_reload_adif.setShortcut(QKeySequence("F9"))
+        act_reload_adif.triggered.connect(lambda: self._load_adif(notify=True))
+        m_file.addAction(act_reload_adif)
         m_file.addSeparator()
         act_quit = QAction("Esci", self)
         act_quit.setShortcut(QKeySequence("Ctrl+Q"))
@@ -411,6 +481,15 @@ class MainWindow(QMainWindow):
         act_alerts = QAction("🔔 Modifica alert… (Ctrl+F)", self)
         act_alerts.triggered.connect(self._focus_alert_edit)
         m_filters.addAction(act_alerts)
+        m_filters.addSeparator()
+        self.sound_action = QAction("🔔 Avvisi sonori", self)
+        self.sound_action.setCheckable(True)
+        self.sound_action.toggled.connect(self._on_sound_action_toggled)
+        m_filters.addAction(self.sound_action)
+        self.voice_action = QAction("🗣 Voce negli avvisi", self)
+        self.voice_action.setCheckable(True)
+        self.voice_action.toggled.connect(self._on_voice_action_toggled)
+        m_filters.addAction(self.voice_action)
 
         # Satelliti
         m_sat = mb.addMenu("🛰 &Satelliti")
@@ -424,6 +503,11 @@ class MainWindow(QMainWindow):
         act_sat_pick = QAction("Cerca e seleziona…", self)
         act_sat_pick.triggered.connect(self._open_sat_menu)
         m_sat.addAction(act_sat_pick)
+        m_sat.addSeparator()
+        act_sat_passes = QAction("📈 Passaggi e polar plot…", self)
+        act_sat_passes.setShortcut(QKeySequence("F10"))
+        act_sat_passes.triggered.connect(self._open_passes_dialog)
+        m_sat.addAction(act_sat_passes)
 
         # Impostazioni
         m_settings = mb.addMenu("&Impostazioni")
@@ -447,6 +531,10 @@ class MainWindow(QMainWindow):
         self.sat_btn.showMenu()
 
     def _build_statusbar(self):
+        self.status_adif = QLabel("Log ADIF: —")
+        self.status_adif.setStyleSheet("color: #8d9099;")
+        self.status_adif.setToolTip("QSO caricati dal log ADIF per il worked-before")
+        self.statusBar().addPermanentWidget(self.status_adif)
         self.status_relay = QLabel("")
         self.status_relay.setStyleSheet("color: #888;")
         self.statusBar().addPermanentWidget(self.status_relay)
@@ -491,6 +579,10 @@ class MainWindow(QMainWindow):
 
         self.lbl_mode = QLabel("—")
         form.addRow("Modo:", self.lbl_mode)
+
+        self.lbl_log = QLabel("—")
+        self.lbl_log.setStyleSheet("font-weight: bold;")
+        form.addRow("Log ADIF:", self.lbl_log)
 
         self.lbl_spotter = QLabel("—")
         form.addRow("Spotter:", self.lbl_spotter)
@@ -672,6 +764,18 @@ class MainWindow(QMainWindow):
         self.lbl_country.setText(spot.country or "Sconosciuta")
         self.lbl_freq.setText(f"{spot.freq_khz:.1f} kHz ({spot.band})")
         self.lbl_mode.setText(spot.mode)
+
+        status = self.adif.status_for(
+            spot.dx_call, spot.band, getattr(spot, "country", None))
+        log_labels = {
+            NEW_COUNTRY: ("NUOVO — entità mai lavorata", "#ffb02e"),
+            NEW_BAND: ("NUOVA BANDA", "#5fd38d"),
+            NEW_CALL: ("nuovo nominativo", "#6aa9ff"),
+            WORKED: ("già a log (B4)", "#777a82"),
+        }
+        log_text, log_color = log_labels.get(status, ("—", "#8d9099"))
+        self.lbl_log.setText(log_text)
+        self.lbl_log.setStyleSheet(f"color: {log_color}; font-weight: bold;")
         spotter_text = spot.spotter or "—"
         spotter_country = getattr(spot, "spotter_country", None)
         if spotter_country:
@@ -760,6 +864,24 @@ class MainWindow(QMainWindow):
         saved_alerts = settings.value("alerts/list", "", type=str)
         if saved_alerts:
             self.alert_edit.setText(saved_alerts)
+
+        saved_call = settings.value("user/callsign", "", type=str)
+        self.callsign_edit.setText(saved_call)
+
+        saved_adif = settings.value("log/adif_path", "", type=str)
+        if saved_adif:
+            self.adif_path = saved_adif
+        self.adif_path_edit.setText(self.adif_path)
+
+        sound_on = settings.value("alerts/sound_enabled", True, type=bool)
+        voice_on = settings.value("alerts/voice_enabled", True, type=bool)
+        volume = settings.value("alerts/volume", 70, type=int)
+        self.sound_cb.setChecked(sound_on)
+        self.voice_cb.setChecked(voice_on)
+        self.volume_slider.setValue(max(0, min(100, volume)))
+        self.alert_sounds.set_volume(max(0, min(100, volume)) / 100.0)
+        self.sound_action.setChecked(sound_on)
+        self.voice_action.setChecked(voice_on)
             
         saved_theme = settings.value("ui/dark_theme", False, type=bool)
         self.theme_cb.setChecked(saved_theme)
@@ -801,6 +923,9 @@ class MainWindow(QMainWindow):
         self.data_source = self.source_combo.currentData() or "cluster"
         self._activate_source(self.data_source)
 
+        # Log ADIF per worked-before (se configurato o trovato automaticamente)
+        self._load_adif()
+
     def _connect_signals(self):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.cont_combo.currentIndexChanged.connect(self._on_continent_changed)
@@ -817,6 +942,10 @@ class MainWindow(QMainWindow):
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         self.port_spin.valueChanged.connect(self._on_wsjtx_port_changed)
         self.spot_list.spot_selected.connect(self._on_spot_selected)
+        self.sound_cb.toggled.connect(self._on_sound_toggled)
+        self.voice_cb.toggled.connect(self._on_voice_toggled)
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        self.adif_path_edit.editingFinished.connect(self._on_adif_path_changed)
 
         # --- Scorciatoie (15) ---
         QShortcut(QKeySequence("F5"), self, activated=self.refresh)
@@ -930,6 +1059,15 @@ class MainWindow(QMainWindow):
         lines.append("— Top 5 nazioni DX —")
         for name, n in by_country.most_common(5):
             lines.append(f"  {name}: {n} spot")
+
+        if self.adif.loaded:
+            lines.append("")
+            lines.append("— Log ADIF (worked-before) —")
+            lines.append(f"  {self.adif.total_qsos} QSO nel log")
+            lines.append(f"  {len(self.adif.worked_countries)} entità DXCC lavorate")
+            lines.append(f"  {len(self.adif.worked_calls)} nominativi diversi")
+            if self.adif.path:
+                lines.append(f"  File: {self.adif.path}")
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Statistiche sessione")
@@ -1130,6 +1268,160 @@ class MainWindow(QMainWindow):
         QSettings().setValue("alerts/list", text)
         self._apply_filter()
 
+    # ---------- Log ADIF / worked-before ----------
+    def _load_adif(self, notify: bool = False):
+        """(Ri)carica il log ADIF e aggiorna lista, dettaglio e stato."""
+        path = (self.adif_path_edit.text().strip() or self.adif_path
+                or default_adif_path())
+        self.adif_path = path
+        if path:
+            QSettings().setValue("log/adif_path", path)
+            self.adif_path_edit.setText(path)
+
+        ok = self.adif.load(path)
+        if ok:
+            self.adif_status_label.setText(self.adif.summary())
+            self.status_adif.setText(f"Log ADIF: {self.adif.total_qsos} QSO")
+            self.status_adif.setToolTip(self.adif.summary())
+        else:
+            if not path:
+                msg = ("Nessun log ADIF configurato: indica il file wsjtx_log.adi "
+                       "per attivare B4 e i badge NUOVO/BANDA.")
+            else:
+                msg = f"⚠ {self.adif.error}"
+            self.adif_status_label.setText(msg)
+            self.status_adif.setText("Log ADIF: —")
+            self.status_adif.setToolTip(msg)
+
+        self.spot_list.set_adif_log(self.adif)
+        self._apply_filter()
+        if self.current_spot_detail:
+            self._show_spot_details(self.current_spot_detail)
+
+        if notify:
+            if ok:
+                self.statusBar().showMessage(
+                    f"Log ADIF ricaricato: {self.adif.total_qsos} QSO", 4000)
+            else:
+                self.statusBar().showMessage(
+                    f"Log ADIF non caricato: {self.adif.error}", 6000)
+
+    def _check_adif_changed(self):
+        """Ricarica il log se WSJT-X lo ha aggiornato (mtime cambiato)."""
+        path = self.adif_path_edit.text().strip()
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return
+        if self.adif.mtime is None or mtime > self.adif.mtime + 1e-6:
+            self._load_adif()
+            if self.adif.loaded:
+                self.statusBar().showMessage(
+                    f"Log ADIF aggiornato: {self.adif.total_qsos} QSO", 3000)
+
+    def _on_adif_path_changed(self):
+        text = self.adif_path_edit.text().strip()
+        if text == self.adif_path and self.adif.loaded:
+            return
+        self.adif_path = text
+        QSettings().setValue("log/adif_path", text)
+        self._load_adif(notify=True)
+
+    def _browse_adif(self):
+        start = (self.adif_path_edit.text().strip()
+                 or os.path.expanduser("~"))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Scegli il log ADIF di WSJT-X", start,
+            "Log ADIF (*.adi *.adif);;Tutti i file (*)")
+        if path:
+            self.adif_path_edit.setText(path)
+            self._on_adif_path_changed()
+
+    # ---------- Avvisi sonori e vocali ----------
+    def _my_callsign(self) -> str:
+        """Nominativo dell'operatore (impostazione dedicata o ricevitore PSKR)."""
+        return (QSettings().value("user/callsign", "", type=str).strip().upper()
+                or QSettings().value("user/pskr_receiver", "", type=str).strip().upper())
+
+    def _sound_enabled(self) -> bool:
+        return QSettings().value("alerts/sound_enabled", True, type=bool)
+
+    def _voice_enabled(self) -> bool:
+        return QSettings().value("alerts/voice_enabled", True, type=bool)
+
+    @staticmethod
+    def _band_spoken(band: str) -> str:
+        band = (band or "").strip()
+        return f"{band[:-1]} metri" if band.endswith("m") else band
+
+    def _on_sound_toggled(self, checked):
+        QSettings().setValue("alerts/sound_enabled", checked)
+        if hasattr(self, "sound_action"):
+            self.sound_action.blockSignals(True)
+            self.sound_action.setChecked(checked)
+            self.sound_action.blockSignals(False)
+
+    def _on_voice_toggled(self, checked):
+        QSettings().setValue("alerts/voice_enabled", checked)
+        if hasattr(self, "voice_action"):
+            self.voice_action.blockSignals(True)
+            self.voice_action.setChecked(checked)
+            self.voice_action.blockSignals(False)
+
+    def _on_sound_action_toggled(self, checked):
+        QSettings().setValue("alerts/sound_enabled", checked)
+        if hasattr(self, "sound_cb"):
+            self.sound_cb.blockSignals(True)
+            self.sound_cb.setChecked(checked)
+            self.sound_cb.blockSignals(False)
+
+    def _on_voice_action_toggled(self, checked):
+        QSettings().setValue("alerts/voice_enabled", checked)
+        if hasattr(self, "voice_cb"):
+            self.voice_cb.blockSignals(True)
+            self.voice_cb.setChecked(checked)
+            self.voice_cb.blockSignals(False)
+
+    def _on_volume_changed(self, value):
+        QSettings().setValue("alerts/volume", value)
+        self.alert_sounds.set_volume(value / 100.0)
+
+    def _test_audio(self):
+        self.alert_sounds.test(self.voice_cb.isChecked())
+
+    def _notify_alert(self, spot, others: int = 0):
+        """Suono e voce per uno spot che corrisponde agli avvisi."""
+        if self._sound_enabled():
+            status = self.adif.status_for(
+                spot.dx_call, spot.band, getattr(spot, "country", None))
+            self.alert_sounds.play("new_country" if status == NEW_COUNTRY else "alert")
+        if self._voice_enabled():
+            text = (f"Nominativo {spot.dx_call}, banda "
+                    f"{self._band_spoken(spot.band)}, {spot.mode}")
+            if others:
+                text += f", e altri {others} spot"
+            self.alert_sounds.speak(text)
+
+    def _notify_calling(self, spot):
+        """Qualcuno ci sta chiamando (decodifica WSJT-X col nostro nominativo)."""
+        if self._sound_enabled():
+            self.alert_sounds.play("calling")
+        if self._voice_enabled():
+            self.alert_sounds.speak(f"{spot.dx_call} ti sta chiamando")
+        self.tray_icon.showMessage(
+            "📞 Ti sta chiamando",
+            f"{spot.dx_call} — {spot.freq_khz:.1f} kHz ({spot.band}, {spot.mode})",
+            QSystemTrayIcon.MessageIcon.Information, 6000)
+
+    def _open_passes_dialog(self):
+        if self.passes_dialog is None:
+            self.passes_dialog = SatellitePassesDialog(self)
+        self.passes_dialog.show()
+        self.passes_dialog.raise_()
+        self.passes_dialog.activateWindow()
+
     # ---------- Target locator (16) ----------
     def _on_target_changed(self):
         text = self.target_edit.text().strip().upper()
@@ -1191,7 +1483,7 @@ class MainWindow(QMainWindow):
             msg = f"{first.dx_call} su {first.freq_khz:.1f} kHz ({first.band}, {first.mode})"
             if len(new_alerts) > 1: msg += f" e altri {len(new_alerts)-1} spot"
             self.tray_icon.showMessage("🚨 DX Alert!", msg, QSystemTrayIcon.MessageIcon.Information, 5000)
-            QApplication.beep()
+            self._notify_alert(first, len(new_alerts) - 1)
 
     # ---------- Sorgente dati: Cluster o WSJT-X (41) ----------
     def _on_source_changed(self, _index):
@@ -1303,14 +1595,30 @@ class MainWindow(QMainWindow):
         self.settings_dialog.show()
 
     def _apply_settings(self):
-        """OK: applica e salva locator, unità, porta, inoltro e nominativo PSKR."""
+        """OK: applica e salva stazione, log ADIF, avvisi e sorgenti."""
         self._on_locator_changed()
         self._on_relay_changed()
         self._on_wsjtx_port_changed(self.port_spin.value())
         self._on_unit_changed(self.unit_combo.currentIndex())
+
+        call = self.callsign_edit.text().strip().upper()
+        QSettings().setValue("user/callsign", call)
+        QSettings().setValue("alerts/sound_enabled", self.sound_cb.isChecked())
+        QSettings().setValue("alerts/voice_enabled", self.voice_cb.isChecked())
+        QSettings().setValue("alerts/volume", self.volume_slider.value())
+        self.alert_sounds.set_volume(self.volume_slider.value() / 100.0)
+
+        new_adif = self.adif_path_edit.text().strip()
+        if new_adif != self.adif_path:
+            self.adif_path = new_adif
+            QSettings().setValue("log/adif_path", new_adif)
+            self._load_adif(notify=True)
+
         pskr = self.pskr_edit.text().strip().upper()
         QSettings().setValue("user/pskr_receiver", pskr)
         self.pskr_provider.receiver_callsign = pskr
+        if self.wsjtx_listener is not None:
+            self.wsjtx_listener.my_call = self._my_callsign()
         if self.data_source == "pskr":
             self._on_pskr_timer()   # aggiorna subito con il nuovo nominativo
         self.settings_dialog.accept()
@@ -1319,9 +1627,18 @@ class MainWindow(QMainWindow):
         """Annulla: ripristina i valori salvati nei campi."""
         s = QSettings()
         self.locator_edit.setText(s.value("user/locator", "", type=str))
+        self.callsign_edit.setText(s.value("user/callsign", "", type=str))
         self.pskr_edit.setText(s.value("user/pskr_receiver", "IZ0FIU", type=str))
         self.relay_edit.setText(s.value("source/relay_targets", "", type=str))
         self.port_spin.setValue(s.value("source/wsjtx_port", 2237, type=int))
+        self.adif_path_edit.setText(s.value("log/adif_path", "", type=str))
+        for widget in (self.sound_cb, self.voice_cb, self.volume_slider):
+            widget.blockSignals(True)
+        self.sound_cb.setChecked(s.value("alerts/sound_enabled", True, type=bool))
+        self.voice_cb.setChecked(s.value("alerts/voice_enabled", True, type=bool))
+        self.volume_slider.setValue(s.value("alerts/volume", 70, type=int))
+        for widget in (self.sound_cb, self.voice_cb, self.volume_slider):
+            widget.blockSignals(False)
         idx = self.unit_combo.findData(s.value("ui/distance_unit", "km", type=str))
         if idx >= 0:
             self.unit_combo.setCurrentIndex(idx)
@@ -1330,7 +1647,8 @@ class MainWindow(QMainWindow):
     def _start_wsjtx_listener(self):
         port = self.port_spin.value()
         targets = self._parse_relay_targets(self.relay_edit.text())
-        self.wsjtx_listener = WSJTXListener(port, relay_targets=targets)
+        self.wsjtx_listener = WSJTXListener(
+            port, relay_targets=targets, my_call=self._my_callsign())
         if targets:
             log.info("Ponte UDP: inoltro verso %s", ", ".join(f"{h}:{p}" for h, p in targets))
         self.wsjtx_listener.decode_received.connect(self._on_wsjtx_decode)
@@ -1383,6 +1701,11 @@ class MainWindow(QMainWindow):
         self.all_spots.append(spot)
         self.last_refresh_ts = time.monotonic()
         self._apply_filter()
+
+        # "Ti sta chiamando": avviso immediato, distinto dall'alert normale
+        if getattr(spot, "calling_me", False):
+            self._notified_ids.add(spot.id)  # evita il doppio avviso da _check_alerts
+            self._notify_calling(spot)
 
     def _on_wsjtx_status(self, info):
         self.wsjtx_last_status = info
