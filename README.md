@@ -124,32 +124,9 @@ usare **Prova**. I toggle rapidi sono anche nel menu **Filtri**.
 
 ## Sviluppo
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-./run.sh
-```
-
-### Test e release
-
-Flusso di lavoro: **modifica → test → conferma → pubblicazione**.
-
-```bash
-./check.sh              # compila tutto + smoke test della UI (da fare sempre)
-git add -A && git commit -m "descrizione modifica"
-```
-
-Solo dopo aver verificato che tutto funziona, si pubblica una release:
-
-```bash
-./release.sh 2.1.0      # controlla il repo, esegue i test, aggiorna version.py,
-                        # commit + tag v2.1.0, push e segue la build GitHub Actions
-```
-
-GitHub Actions compila automaticamente l'exe Windows e l'archivio Linux e crea
-la Release con i file allegati. Le modifiche al codice possono essere pushate
-su `main` anche senza release: la build parte **solo** quando si pusha un tag
-`v*`.
+Il progetto è in Python con PySide6; la mappa usa Leaflet. Per eseguire dal
+sorgente, eseguire i test e pubblicare una release vedi
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licenza
 
