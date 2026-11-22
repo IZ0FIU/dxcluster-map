@@ -2,16 +2,19 @@ name: Release
 
 # Si attiva quando pubblichi un tag di versione (es. v2.0.0):
 # compila l'exe Windows, prepara l'archivio Linux e crea la Release.
+# Con workflow_dispatch si può provare la build senza pubblicare nulla.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write   # necessario per creare la release
 
 jobs:
   check-version:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +30,7 @@ jobs:
   windows:
     runs-on: windows-latest
     needs: check-version
+    if: ${{ !cancelled() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,17 +40,41 @@ jobs:
         run: pip install -r requirements.txt pyinstaller
       - name: Compila con PyInstaller
         run: pyinstaller dxcluster_map.spec --noconfirm
+      - name: Smoke test del pacchetto
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QTWEBENGINE_DISABLE_SANDBOX = '1'
+          $env:QTWEBENGINE_CHROMIUM_FLAGS = '--disable-gpu --no-sandbox --in-process-gpu'
+          $p = Start-Process -FilePath "dist\DXClusterMap\DXClusterMap.exe" `
+                 -ArgumentList "--smoke-test" -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Error "smoke test: timeout"; exit 1 }
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          Write-Host "Smoke test OK"
       - name: Crea zip Windows
         shell: pwsh
         run: Compress-Archive -Path dist/DXClusterMap/* -DestinationPath "DXClusterMap-${{ github.ref_name }}-windows-x64.zip"
+      - name: Crea installer Windows (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=$version" "installer\dxcluster_map.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: windows-zip
-          path: DXClusterMap-${{ github.ref_name }}-windows-x64.zip
+          path: DXClusterMap-*-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist_installer/DXClusterMap-*-windows-setup.exe
 
   linux:
     runs-on: ubuntu-latest
     needs: check-version
+    if: ${{ !cancelled() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped') }}
     steps:
       - uses: actions/checkout@v4
       - name: Crea archivio sorgenti Linux
@@ -56,9 +84,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux-targz
-          path: DXClusterMap-${{ github.ref_name }}-linux.tar.gz
+          path: DXClusterMap-*-linux.tar.gz
 
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     needs: [windows, linux]
     steps:
@@ -71,4 +100,5 @@ jobs:
           generate_release_notes: true
           files: |
             DXClusterMap-*-windows-x64.zip
+            DXClusterMap-*-windows-setup.exe
             DXClusterMap-*-linux.tar.gz

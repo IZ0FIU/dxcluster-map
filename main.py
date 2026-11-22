@@ -1830,14 +1830,29 @@ class MainWindow(QMainWindow):
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    if "--smoke-test" in sys.argv:
+        # Test automatico del pacchetto (usato da check.sh e da GitHub Actions):
+        # costruisce la finestra e chiude dopo qualche secondo senza UI.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS",
+            "--disable-gpu --no-sandbox --in-process-gpu")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setOrganizationName("DXClusterMap")
     app.setApplicationName("DXClusterMap")
     app.setQuitOnLastWindowClosed(False)
-    
+
     win = MainWindow()
     win.show()
+
+    if "--smoke-test" in sys.argv:
+        def _smoke_ok():
+            print("SMOKE OK", flush=True)
+            app.quit()
+        QTimer.singleShot(8000, _smoke_ok)
+        sys.exit(app.exec())
 
     timer = QTimer()
     timer.start(200)

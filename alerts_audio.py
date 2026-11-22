@@ -1,8 +1,10 @@
 """Avvisi sonori e vocali per DX Cluster Map.
 
 I suoni sono generati a runtime (nessun file da distribuire) e riprodotti con
-QtMultimedia; la voce usa QtTextToSpeech e, se non disponibile, i comandi di
-sintesi del sistema (espeak-ng/spd-say, say di macOS, SAPI di Windows).
+QtMultimedia, se disponibile, altrimenti con il player di sistema (winsound su
+Windows, paplay/aplay su Linux); la voce usa QtTextToSpeech e, se non
+disponibile, i comandi di sintesi del sistema (espeak-ng/spd-say, say di macOS,
+SAPI di Windows).
 """
 from __future__ import annotations
 
@@ -16,7 +18,14 @@ import sys
 import wave
 
 from PySide6.QtCore import QObject, QUrl
-from PySide6.QtMultimedia import QSoundEffect
+
+# QtMultimedia pesa ~25 MB nel pacchetto Windows (FFmpeg incluso) solo per
+# riprodurre tre WAV: la rendiamo opzionale e usiamo il player di sistema
+# (winsound su Windows, paplay/aplay su Linux) quando non c'è.
+try:
+    from PySide6.QtMultimedia import QSoundEffect
+except ImportError:  # build senza QtMultimedia
+    QSoundEffect = None
 
 log = logging.getLogger(__name__)
 
@@ -85,11 +94,12 @@ class AlertSounds(QObject):
         super().__init__(parent)
         self._paths = _ensure_sounds()
         self._effects = {}
-        for key, path in self._paths.items():
-            effect = QSoundEffect(self)
-            effect.setSource(QUrl.fromLocalFile(path))
-            effect.setLoopCount(1)
-            self._effects[key] = effect
+        if QSoundEffect is not None:
+            for key, path in self._paths.items():
+                effect = QSoundEffect(self)
+                effect.setSource(QUrl.fromLocalFile(path))
+                effect.setLoopCount(1)
+                self._effects[key] = effect
         self._volume = 0.7
         self._voice = None
         self._voice_checked = False
@@ -174,6 +184,7 @@ class AlertSounds(QObject):
     def play(self, kind: str = "alert"):
         effect = self._effects.get(kind) or self._effects.get("alert")
         if effect is None:
+            self._play_external(self._paths.get(kind) or self._paths.get("alert"))
             return
         try:
             effect.setVolume(self._volume)
@@ -190,6 +201,14 @@ class AlertSounds(QObject):
     @staticmethod
     def _play_external(path):
         if not path:
+            return
+        if sys.platform.startswith("win"):
+            try:
+                import winsound
+                winsound.PlaySound(
+                    path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Riproduzione con winsound fallita: %s", exc)
             return
         cmd = None
         if sys.platform == "darwin" and shutil.which("afplay"):
