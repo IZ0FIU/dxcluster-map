@@ -51,16 +51,28 @@ jobs:
           if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Error "smoke test: timeout"; exit 1 }
           if ($p.ExitCode -ne 0) { exit $p.ExitCode }
           Write-Host "Smoke test OK"
+      - name: Determina versione
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            # build di prova (workflow_dispatch): versione da version.py
+            $version = (Select-String -Path version.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+            $version = "$version-dev"
+          }
+          Write-Host "versione: $version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Crea zip Windows
         shell: pwsh
-        run: Compress-Archive -Path dist/DXClusterMap/* -DestinationPath "DXClusterMap-${{ github.ref_name }}-windows-x64.zip"
+        run: Compress-Archive -Path dist/DXClusterMap/* -DestinationPath "DXClusterMap-v${{ steps.ver.outputs.version }}-windows-x64.zip"
       - name: Crea installer Windows (Inno Setup)
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          $version = $env:GITHUB_REF_NAME.Substring(1)
           $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
-          & $iscc "/DAppVersion=$version" "installer\dxcluster_map.iss"
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "installer\dxcluster_map.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
