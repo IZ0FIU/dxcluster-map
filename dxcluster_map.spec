@@ -103,7 +103,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('installer/icon.png', '.')],
     hiddenimports=[
         'PySide6.QtWebEngineWidgets',
         'PySide6.QtWebEngineCore',
@@ -145,7 +145,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,          # app GUI: nessuna finestra terminale
-    icon=None,
+    icon='installer/dxcluster_map.ico',
 )
 
 coll = COLLECT(

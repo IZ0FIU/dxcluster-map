@@ -15,6 +15,7 @@ AppName={#MyAppName}
 AppVersion={#AppVersion}
 AppVerName={#MyAppName} v{#AppVersion}
 WizardStyle=modern
+SetupIconFile=dxcluster_map.ico
 DefaultDirName={localappdata}\Programs\DXClusterMap
 PrivilegesRequired=lowest
 OutputDir=..\dist_installer

@@ -34,6 +34,15 @@ from spot_list import SpotList
 from wsjtx_listener import WSJTXListener
 from psk_provider import PSKReporterProvider
 
+
+def _asset_path(name: str) -> str:
+    """Percorso di una risorsa, sia in sviluppo sia nel pacchetto PyInstaller."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+APP_ICON = _asset_path("icon.png")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -110,7 +119,7 @@ class MainWindow(QMainWindow):
         self.error_banner.hide()
 
         # --- Tray Icon ---
-        self.tray_icon = QSystemTrayIcon(QIcon.fromTheme("utilities-system-monitor"), self)
+        self.tray_icon = QSystemTrayIcon(QIcon(APP_ICON), self)
         self.tray_icon.setToolTip("DX Cluster Map")
         self.tray_menu = QMenu()
         exit_action = QAction("Esci", self)
@@ -1840,6 +1849,7 @@ def main():
             "--disable-gpu --no-sandbox --in-process-gpu")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon(APP_ICON))
     app.setOrganizationName("DXClusterMap")
     app.setApplicationName("DXClusterMap")
     app.setQuitOnLastWindowClosed(False)
