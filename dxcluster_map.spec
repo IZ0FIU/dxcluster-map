@@ -71,8 +71,10 @@ def _keep(entry) -> bool:
     stem = _stem(dest)
     if "pyside" in stem or "shiboken" in stem:
         return True
-    if ".abi3" in raw or raw.endswith(".pyd"):
-        # binding Python: tienilo solo se l'app lo usa davvero
+    if dest.startswith("pyside6/") and (".abi3" in raw or raw.endswith(".pyd")):
+        # binding PySide6: tienilo solo se l'app lo usa davvero.
+        # Attenzione: i .pyd della stdlib (_socket, _ssl, ...) non sono binding
+        # e devono restare.
         return stem in KEEP_BINDINGS
     if stem.startswith(DROP_PREFIXES):
         return False
