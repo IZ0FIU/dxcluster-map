@@ -11,9 +11,14 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class SolarData:
+    ok: bool = False
     sfi: Optional[int] = None
     a_index: Optional[int] = None
     k_index: Optional[int] = None
+    sunspots: Optional[int] = None
+    xray: str = ""
+    solarwind: str = ""
+    magneticfield: str = ""
     updated: str = ""
     band_conditions: Optional[Dict[str, str]] = None
     vhf_conditions: Optional[Dict[str, str]] = None
@@ -57,7 +62,10 @@ class SolarProvider:
 
             def get_int(tag):
                 el = solardata.find(tag)
-                return int(el.text) if el is not None and el.text else None
+                try:
+                    return int(el.text) if el is not None and el.text else None
+                except ValueError:
+                    return None
 
             # Condizioni bande HF
             band_conditions = {}
@@ -85,9 +93,15 @@ class SolarProvider:
             signal_noise = solardata.findtext('signalnoise', default='')
 
             return SolarData(
+                ok=True,
                 sfi=get_int('solarflux'),
                 a_index=get_int('aindex'),
                 k_index=get_int('kindex'),
+                sunspots=get_int('sunspots'),
+                xray=solardata.findtext('xray', default='').strip(),
+                solarwind=solardata.findtext('solarwind', default='').strip(),
+                magneticfield=solardata.findtext('magneticfield',
+                                                   default='').strip(),
                 updated=solardata.findtext('updated', default=''),
                 band_conditions=band_conditions,
                 vhf_conditions=vhf_conditions,

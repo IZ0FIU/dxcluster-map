@@ -1,69 +1,142 @@
 import logging
+import re
+import threading
 
-import requests
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QPixmap, QDesktopServices
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QVBoxLayout,
+                               QWidget)
+
+from solar_provider import SolarProvider
 
 log = logging.getLogger(__name__)
 
 
-class _ClickableLabel(QLabel):
-    """QLabel cliccabile: apre il link di HamQSL nel browser di sistema."""
-    def __init__(self, dashboard):
-        super().__init__()
-        self._dashboard = dashboard
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            QDesktopServices.openUrl(QUrl("https://www.hamqsl.com/solar.html"))
-        super().mouseReleaseEvent(event)
+class _FetchDone(QObject):
+    """Ponte thread→GUI: il fetch avviene in background, l'aggiornamento no."""
+    done = Signal(object)
 
 
 class SolarDashboard(QWidget):
-    """Pannello dati solari: widget ufficiale HamQSL (solar101vhf),
-    identico a quello pubblicato su hamqsl.com, cliccabile per aprirne il sito."""
+    """Pannello compatto con i principali indici di propagazione.
 
-    IMAGE_URL = "https://www.hamqsl.com/solar101vhfpic.php"
-    TIMEOUT = 15
+    I dati arrivano dal feed XML di HamQSL (N0NBH), lo stesso del widget
+    solar101vhf, ma qui vengono mostrati come valori testuali: niente
+    immagine, quindi il pannello si adatta da solo alla larghezza del dock.
+    """
+
+    SITE_URL = "https://www.hamqsl.com/solar.html"
+
+    # (etichetta, campo di SolarData) — i valori principali
+    METRICS = (
+        ("SFI", "sfi"),
+        ("A", "a_index"),
+        ("K", "k_index"),
+        ("SSN", "sunspots"),
+    )
 
     def __init__(self):
         super().__init__()
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(2)
+        self._provider = SolarProvider()
+        self._bridge = _FetchDone()
+        self._bridge.done.connect(self._apply_data)
+        self._busy = False
+        self._last = None
+        self._value_labels = {}
 
-        self.image_label = _ClickableLabel(self)
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setToolTip("Dati solari di N0NBH — hamqsl.com (clicca per aprire il sito)")
-        main_layout.addWidget(self.image_label)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Indici di propagazione N0NBH — hamqsl.com "
+                        "(clicca per aprire il sito)")
 
-        self.error_label = QLabel("Dati solari non disponibili")
-        self.error_label.setStyleSheet("font-size: 11px; color: #888;")
-        self.error_label.setAlignment(Qt.AlignCenter)
-        self.error_label.hide()
-        main_layout.addWidget(self.error_label)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(2, 2, 2, 4)
+        outer.setSpacing(1)
 
-        self.session = requests.Session()
-        self.session.headers["User-Agent"] = "DXClusterMap/1.0 (+ham radio spot viewer)"
+        # Intestazione: titolo + ora dell'ultimo aggiornamento
+        head = QHBoxLayout()
+        head.setContentsMargins(2, 0, 2, 0)
+        title = QLabel("Propagazione")
+        title.setStyleSheet("color: #8d9099; font-size: 10px; font-weight: bold;")
+        self.updated_label = QLabel("")
+        self.updated_label.setStyleSheet("color: #8d9099; font-size: 10px;")
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(self.updated_label)
+        outer.addLayout(head)
 
+        # Indici principali, in colonne che si allargano con il dock
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 1, 0, 1)
+        grid.setHorizontalSpacing(4)
+        grid.setVerticalSpacing(0)
+        for col, (key, attr) in enumerate(self.METRICS):
+            key_label = QLabel(key)
+            key_label.setAlignment(Qt.AlignCenter)
+            key_label.setStyleSheet("color: #8d9099; font-size: 10px;")
+            value_label = QLabel("–")
+            value_label.setAlignment(Qt.AlignCenter)
+            value_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+            grid.addWidget(key_label, 0, col)
+            grid.addWidget(value_label, 1, col)
+            grid.setColumnStretch(col, 1)
+            self._value_labels[attr] = value_label
+        outer.addLayout(grid)
+
+        # Riga secondaria: raggi X, vento solare, campo geomagnetico
+        self.detail_label = QLabel("In attesa dei dati…")
+        self.detail_label.setStyleSheet("color: #8d9099; font-size: 10px;")
+        self.detail_label.setAlignment(Qt.AlignCenter)
+        self.detail_label.setWordWrap(True)
+        outer.addWidget(self.detail_label)
+
+    # ---------- Aggiornamento dati ----------
     def refresh(self):
-        """Scarica (e ricarica) il widget HamQSL ufficiale."""
+        """Avvia il download in background (una richiesta alla volta)."""
+        if self._busy:
+            return
+        self._busy = True
+        threading.Thread(target=self._fetch, name="solar-fetch",
+                         daemon=True).start()
+
+    def _fetch(self):
         try:
-            resp = self.session.get(self.IMAGE_URL, timeout=self.TIMEOUT)
-            resp.raise_for_status()
-            pixmap = QPixmap()
-            if not pixmap.loadFromData(resp.content):
-                raise ValueError("formato immagine non riconosciuto")
-            self.error_label.hide()
-            self.image_label.show()
-            # L'immagine nativa è 460x148: la scaliamo alla larghezza disponibile
-            width = max(self.width(), 240)
-            if 0 < width <= 460:
-                pixmap = pixmap.scaledToWidth(width, Qt.SmoothTransformation)
-            self.image_label.setPixmap(pixmap)
-        except (requests.RequestException, ValueError) as e:
-            log.error("Errore fetch widget solare HamQSL: %s", e)
-            if self.image_label.pixmap() is None:
-                self.image_label.hide()
-                self.error_label.show()
+            data = self._provider.fetch()
+        except Exception:
+            log.exception("Errore imprevisto nei dati solari")
+            data = None
+        self._bridge.done.emit(data)
+
+    def _apply_data(self, data):
+        self._busy = False
+        if data is None or not data.ok:
+            if self._last is None:
+                self.detail_label.setText("Dati di propagazione non disponibili")
+            return
+        self._last = data
+        for attr, label in self._value_labels.items():
+            value = getattr(data, attr, None)
+            label.setText("–" if value is None else str(value))
+        self.updated_label.setText(_format_updated(data.updated))
+        parts = []
+        if data.xray:
+            parts.append(f"Raggi X {data.xray}")
+        if data.solarwind:
+            parts.append(f"Vento {data.solarwind} km/s")
+        if data.geomag_field:
+            parts.append(f"Geo {data.geomag_field}")
+        self.detail_label.setText("  ·  ".join(parts))
+
+    # ---------- Interazione ----------
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            QDesktopServices.openUrl(QUrl(self.SITE_URL))
+        super().mouseReleaseEvent(event)
+
+
+def _format_updated(raw: str) -> str:
+    """' 22 Nov 2026 2103 GMT' -> 'agg. 21:03 UTC' (indipendente dalla lingua)."""
+    raw = (raw or "").strip()
+    match = re.search(r"\b(\d{2})(\d{2})\s+GMT\b", raw)
+    if match:
+        return f"agg. {match.group(1)}:{match.group(2)} UTC"
+    return raw
