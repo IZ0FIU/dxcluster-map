@@ -16,12 +16,17 @@ Dalla pagina [Releases](https://github.com/IZ0FIU/dxcluster-map/releases/latest)
 
 | Piattaforma | File | Avvio |
 |---|---|---|
-| **Windows 10/11 (64 bit)** | `DXClusterMap-vX.Y.Z-windows-x64.zip` | scompatta e avvia `DXClusterMap.exe` |
+| **Windows 10/11 (64 bit)** | `DXClusterMap-vX.Y.Z-windows-setup.exe` | esegui l'installer: installazione per utente, senza permessi di amministratore |
+| **Windows (portable)** | `DXClusterMap-vX.Y.Z-windows-x64.zip` | scompatta e avvia `DXClusterMap.exe` |
 | **Linux** | `DXClusterMap-vX.Y.Z-linux.tar.gz` | scompatta, crea il venv, `pip install -r requirements.txt`, poi `./run.sh` |
 
 Su Windows non serve installare Python: l'eseguibile contiene già Python e
-Qt/PySide6. Al primo avvio Windows SmartScreen potrebbe chiedere conferma:
-scegli **Ulteriori informazioni → Esegui comunque**.
+Qt/PySide6. L'installer crea i collegamenti nel menu Start e, se vuoi, sul
+desktop; la versione portable non scrive nulla nel sistema. I dati utente
+(impostazioni e log) restano in `%LOCALAPPDATA%\DXClusterMap`.
+
+Al primo avvio Windows SmartScreen potrebbe chiedere conferma perché
+l'eseguibile non è firmato: scegli **Ulteriori informazioni → Esegui comunque**.
 
 Su Linux serve **Python 3.10 o superiore** (con `python3-venv`) e una
 connessione a Internet per le mappe e i dati TLE:

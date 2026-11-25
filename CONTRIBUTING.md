@@ -48,13 +48,26 @@ Lo script:
 4. esegue il push di `main` e del tag
 5. segue la build GitHub Actions fino alla Release
 
-Il workflow `release.yml` compila l'exe Windows con PyInstaller, crea
-l'archivio sorgenti Linux e pubblica la Release con i file allegati
-(`DXClusterMap-vX.Y.Z-windows-x64.zip` e `DXClusterMap-vX.Y.Z-linux.tar.gz`).
+Il workflow `release.yml` compila e verifica il pacchetto Windows con
+PyInstaller (smoke test automatico), crea l'installer con Inno Setup
+(compressione LZMA2) e l'archivio sorgenti Linux, poi pubblica la Release con
+i file allegati:
+
+- `DXClusterMap-vX.Y.Z-windows-setup.exe` — installer per-utente
+- `DXClusterMap-vX.Y.Z-windows-x64.zip` — versione portable
+- `DXClusterMap-vX.Y.Z-linux.tar.gz` — sorgenti
+
+Con **Actions → Release → Run workflow** (`workflow_dispatch`) si può provare
+una build completa senza creare la Release; gli artefatti sono scaricabili
+dalla pagina del run, ma solo da utenti GitHub autenticati.
 
 ### Note
 
 - `version.py` è l'unica fonte del numero di versione: il workflow verifica
   che il tag corrisponda e la build fallisce in caso di discrepanza.
+- L'installer è definito in `installer/dxcluster_map.iss` e usa
+  `installer/dxcluster_map.ico` come icona.
+- L'eseguibile non è firmato: SmartScreen può quindi chiedere conferma al
+  primo avvio.
 - Non inviare query duplicate: tieni **una sola istanza** dell'app attiva
   (due istanze = doppie richieste a PSK Reporter e doppio listener UDP).
