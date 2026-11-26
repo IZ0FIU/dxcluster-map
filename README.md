@@ -43,6 +43,13 @@ Per integrare l'icona nel menu applicazioni puoi usare
 [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) o spostare
 il file in `~/Applications`.
 
+Se l'AppImage non parte perché manca FUSE 2 (su alcune distribuzioni recenti
+non è installato per default), avviala così:
+
+```bash
+./DXClusterMap-vX.Y.Z-x86_64.AppImage --appimage-extract-and-run
+```
+
 In alternativa, dai **sorgenti** (serve Python 3.10 o superiore con
 `python3-venv` e una connessione a Internet per le mappe e i dati TLE):
 
