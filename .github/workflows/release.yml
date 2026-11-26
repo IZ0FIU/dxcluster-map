@@ -115,6 +115,7 @@ jobs:
           sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-render-util0 libxcb-shape0 libfuse2 \
+            libgl1-mesa-dri xvfb \
             desktop-file-utils appstream
       - name: Installa dipendenze Python
         run: pip install -r requirements.txt pyinstaller
@@ -141,9 +142,26 @@ jobs:
           APPIMAGE=$(ls dist/DXClusterMap-*-x86_64.AppImage)
           "$APPIMAGE" --appimage-extract >/dev/null
           desktop-file-validate squashfs-root/*.desktop
-          appstreamcli validate --no-net squashfs-root/usr/share/metainfo/*.xml
+          appstreamcli validate --no-net \
+            squashfs-root/usr/share/metainfo/*.metainfo.xml
+          # I backend X11 e Wayland devono usare le Qt incluse nell'AppImage,
+          # non quelle (di versione diversa) del sistema.
+          for p in \
+            squashfs-root/usr/bin/_internal/PySide6/Qt/plugins/platforms/libqxcb.so \
+            squashfs-root/usr/bin/_internal/PySide6/Qt/plugins/platforms/libqwayland.so; do
+            if ldd "$p" | grep -q 'not found'; then
+              echo "ERRORE: dipendenze mancanti per $p"
+              ldd "$p"
+              exit 1
+            fi
+          done
+          echo "→ smoke test offscreen"
           QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX=1 \
-          QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --no-sandbox --in-process-gpu" \
+            QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --no-sandbox --in-process-gpu" \
+            ./squashfs-root/AppRun --smoke-test
+          echo "→ smoke test X11 (Xvfb)"
+          xvfb-run -a env QT_QPA_PLATFORM=xcb QTWEBENGINE_DISABLE_SANDBOX=1 \
+            QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --no-sandbox --in-process-gpu" \
             ./squashfs-root/AppRun --smoke-test
       - uses: actions/upload-artifact@v4
         with:

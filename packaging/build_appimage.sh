@@ -42,6 +42,11 @@ install -Dm644 "packaging/icons/hicolor/256x256/apps/$APPID.png" \
 install -Dm644 "packaging/icons/hicolor/512x512/apps/$APPID.png" \
     "$APPDIR/usr/share/icons/hicolor/512x512/apps/$APPID.png"
 ln -sf "$APPID.png" "$APPDIR/.DirIcon"
+# appimagetool cerca ancora il vecchio nome *.appdata.xml
+ln -sf "$APPID.metainfo.xml" \
+    "$APPDIR/usr/share/metainfo/$APPID.appdata.xml"
+# L'AppImage deve essere leggibile da qualunque utente
+chmod -R a+rX "$APPDIR"
 
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh

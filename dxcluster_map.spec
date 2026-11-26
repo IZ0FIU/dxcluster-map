@@ -24,6 +24,8 @@ KEEP_BINDINGS = {
 }
 
 # Librerie Qt necessarie a WebEngine e ai widget (verificate via ldd).
+# Su Linux servono anche i backend di piattaforma: senza Qt6XcbQpa il plugin
+# xcb userebbe il Qt di sistema, con una versione diversa (e non funzionerebbe).
 KEEP_QT_LIBS = {
     "qt6core", "qt6gui", "qt6widgets", "qt6network", "qt6opengl",
     "qt6openglwidgets", "qt6svg", "qt6dbus", "qt6printsupport",
@@ -32,6 +34,7 @@ KEEP_QT_LIBS = {
     "qt6positioning", "qt6webchannel",
     "qt6webenginecore", "qt6webenginewidgets",
     "qt6texttospeech",
+    "qt6xcbqpa", "qt6waylandclient",
     "icudata", "icui18n", "icuuc",
 }
 

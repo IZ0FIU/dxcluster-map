@@ -1843,6 +1843,11 @@ def main():
         # Test automatico del pacchetto (usato da check.sh e da GitHub Actions):
         # costruisce la finestra e chiude dopo qualche secondo senza UI.
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+            # Senza display il plugin offscreen non deve tentare GLX (su alcune
+            # build fallisce con "Could not initialize GLX").
+            os.environ.pop("DISPLAY", None)
+            os.environ.pop("WAYLAND_DISPLAY", None)
         os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
         os.environ.setdefault(
             "QTWEBENGINE_CHROMIUM_FLAGS",
