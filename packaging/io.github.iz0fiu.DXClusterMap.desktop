@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=DX Cluster Map
+GenericName=Mappa DX Cluster
+Comment=Mappa interattiva degli spot radioamatoriali
+Exec=DXClusterMap
+Icon=io.github.iz0fiu.DXClusterMap
+Terminal=false
+Categories=Network;HamRadio;
+Keywords=hamradio;radio;dx;cluster;spots;wsjtx;psk;satellite;
+StartupNotify=true
+StartupWMClass=DXClusterMap

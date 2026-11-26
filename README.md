@@ -6,7 +6,7 @@ passaggi, worked-before dal log ADIF e avvisi sonori/vocali.
 
 [![Release](https://img.shields.io/github/v/release/IZ0FIU/dxcluster-map?color=ffb02e&label=versione)](https://github.com/IZ0FIU/dxcluster-map/releases/latest)
 [![Piattaforme](https://img.shields.io/badge/Windows%20%7C%20Linux-3a3c42)](#download)
-[![Licenza](https://img.shields.io/badge/licenza-uso%20personale-8d9099)](#licenza)
+[![Licenza](https://img.shields.io/badge/licenza-MIT-8d9099)](#licenza)
 
 ![DX Cluster Map — schermata principale](docs/screenshot.png)
 
@@ -18,7 +18,8 @@ Dalla pagina [Releases](https://github.com/IZ0FIU/dxcluster-map/releases/latest)
 |---|---|---|
 | **Windows 10/11 (64 bit)** | `DXClusterMap-vX.Y.Z-windows-setup.exe` | esegui l'installer: installazione per utente, senza permessi di amministratore |
 | **Windows (portable)** | `DXClusterMap-vX.Y.Z-windows-x64.zip` | scompatta e avvia `DXClusterMap.exe` |
-| **Linux** | `DXClusterMap-vX.Y.Z-linux.tar.gz` | scompatta, crea il venv, `pip install -r requirements.txt`, poi `./run.sh` |
+| **Linux (AppImage)** | `DXClusterMap-vX.Y.Z-x86_64.AppImage` | rendi eseguibile e avvia: nessuna installazione |
+| **Linux (sorgenti)** | `DXClusterMap-vX.Y.Z-linux.tar.gz` | scompatta, crea il venv, `pip install -r requirements.txt`, poi `./run.sh` |
 
 Su Windows non serve installare Python: l'eseguibile contiene già Python e
 Qt/PySide6. L'installer crea i collegamenti nel menu Start e, se vuoi, sul
@@ -28,8 +29,22 @@ desktop; la versione portable non scrive nulla nel sistema. I dati utente
 Al primo avvio Windows SmartScreen potrebbe chiedere conferma perché
 l'eseguibile non è firmato: scegli **Ulteriori informazioni → Esegui comunque**.
 
-Su Linux serve **Python 3.10 o superiore** (con `python3-venv`) e una
-connessione a Internet per le mappe e i dati TLE:
+### Linux
+
+L'**AppImage** contiene già Python e Qt: è un singolo file, non serve
+installare nulla.
+
+```bash
+chmod +x DXClusterMap-vX.Y.Z-x86_64.AppImage
+./DXClusterMap-vX.Y.Z-x86_64.AppImage
+```
+
+Per integrare l'icona nel menu applicazioni puoi usare
+[AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) o spostare
+il file in `~/Applications`.
+
+In alternativa, dai **sorgenti** (serve Python 3.10 o superiore con
+`python3-venv` e una connessione a Internet per le mappe e i dati TLE):
 
 ```bash
 tar xzf DXClusterMap-vX.Y.Z-linux.tar.gz
@@ -135,4 +150,6 @@ sorgente, eseguire i test e pubblicare una release vedi
 
 ## Licenza
 
-Uso personale/radioamatoriale. Contatta IZ0FIU per altri usi.
+MIT — vedi [LICENSE](LICENSE). Il software è fornito così com'è, senza
+garanzie; puoi usarlo, modificarlo e ridistribuirlo mantenendo l'avviso di
+copyright.

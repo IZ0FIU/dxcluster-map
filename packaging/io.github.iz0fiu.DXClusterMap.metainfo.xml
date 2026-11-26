@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.iz0fiu.DXClusterMap</id>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>DX Cluster Map</name>
+  <summary>Mappa interattiva degli spot radioamatoriali</summary>
+
+  <developer id="io.github.iz0fiu">
+    <name>IZ0FIU</name>
+  </developer>
+
+  <description>
+    <p>
+      DX Cluster Map mostra gli spot radioamatoriali su una mappa interattiva,
+      con grayline, heatmap e distanza/rotta dalla propria stazione.
+    </p>
+    <ul>
+      <li>Sorgenti multiple: cluster web Spothole, WSJT-X via UDP e PSK Reporter</li>
+      <li>Circa 100 satelliti radioamatoriali in tempo reale, con passaggi e polar plot</li>
+      <li>Worked-before dal log ADIF, con badge B4, NUOVO e BANDA</li>
+      <li>Avvisi sonori e vocali per DX, nuovo DXCC e chiamate dirette</li>
+      <li>Ponte UDP per inoltrare i datagrammi WSJT-X ad altri programmi</li>
+      <li>Indici di propagazione e tema chiaro/scuro</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.iz0fiu.DXClusterMap.desktop</launchable>
+
+  <url type="homepage">https://github.com/IZ0FIU/dxcluster-map</url>
+  <url type="bugtracker">https://github.com/IZ0FIU/dxcluster-map/issues</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Mappa degli spot con la lista e il pannello di propagazione</caption>
+      <image type="source">https://raw.githubusercontent.com/IZ0FIU/dxcluster-map/main/docs/screenshot.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Passaggi satelliti e polar plot</caption>
+      <image type="source">https://raw.githubusercontent.com/IZ0FIU/dxcluster-map/main/docs/passes.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>Network</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>hamradio</keyword>
+    <keyword>dx cluster</keyword>
+    <keyword>spots</keyword>
+    <keyword>wsjtx</keyword>
+    <keyword>psk reporter</keyword>
+    <keyword>satellite</keyword>
+  </keywords>
+
+  <provides>
+    <binary>DXClusterMap</binary>
+  </provides>
+
+  <releases>
+    <release version="2.1.1" date="2026-11-25">
+      <description>
+        <p>
+          Installer Windows per-utente, icona dell'applicazione e pannello di
+          propagazione compatto al posto del banner HamQSL.
+        </p>
+      </description>
+    </release>
+    <release version="2.1.0" date="2026-11-21"/>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>

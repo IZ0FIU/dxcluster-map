@@ -1852,6 +1852,9 @@ def main():
     app.setWindowIcon(QIcon(APP_ICON))
     app.setOrganizationName("DXClusterMap")
     app.setApplicationName("DXClusterMap")
+    if sys.platform.startswith("linux"):
+        # associa la finestra al file .desktop (icona corretta in Wayland/GNOME)
+        app.setDesktopFileName("io.github.iz0fiu.DXClusterMap")
     app.setQuitOnLastWindowClosed(False)
 
     win = MainWindow()

@@ -50,16 +50,39 @@ Lo script:
 
 Il workflow `release.yml` compila e verifica il pacchetto Windows con
 PyInstaller (smoke test automatico), crea l'installer con Inno Setup
-(compressione LZMA2) e l'archivio sorgenti Linux, poi pubblica la Release con
-i file allegati:
+(compressione LZMA2), l'archivio sorgenti Linux e l'AppImage, poi pubblica la
+Release con i file allegati:
 
 - `DXClusterMap-vX.Y.Z-windows-setup.exe` — installer per-utente
 - `DXClusterMap-vX.Y.Z-windows-x64.zip` — versione portable
+- `DXClusterMap-vX.Y.Z-x86_64.AppImage` — pacchetto autonomo per Linux
 - `DXClusterMap-vX.Y.Z-linux.tar.gz` — sorgenti
 
 Con **Actions → Release → Run workflow** (`workflow_dispatch`) si può provare
 una build completa senza creare la Release; gli artefatti sono scaricabili
 dalla pagina del run, ma solo da utenti GitHub autenticati.
+
+## Pacchettizzazione Linux (AppImage)
+
+L'AppImage riusa il bundle PyInstaller e aggiunge `.desktop`, icona e
+metadati AppStream. Per provarla in locale:
+
+```bash
+pyinstaller dxcluster_map.spec --noconfirm
+./packaging/build_appimage.sh          # crea dist/DXClusterMap-vX.Y.Z-x86_64.AppImage
+```
+
+I file di integrazione sono in `packaging/`:
+
+- `io.github.iz0fiu.DXClusterMap.desktop` — voce di menu e associazione icona
+- `io.github.iz0fiu.DXClusterMap.metainfo.xml` — metadati AppStream per i centri software
+- `icons/hicolor/…` — icone 256 e 512 px
+- `build_appimage.sh` — crea l'AppDir, scarica `appimagetool` se serve e genera l'AppImage
+
+La CI compila l'AppImage su **Ubuntu 22.04** (glibc 2.35) così da funzionare
+anche sulle distribuzioni meno recenti, poi la estrae e le fa eseguire lo
+smoke test. L'app ID `io.github.iz0fiu.DXClusterMap` è impostato anche in
+`main.py` con `setDesktopFileName`, per l'icona corretta in Wayland.
 
 ### Note
 
