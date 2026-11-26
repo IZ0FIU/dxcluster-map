@@ -52,6 +52,12 @@ DROP_DIRS = (
     "/qt/plugins/multimedia/",
 )
 
+# Librerie di sistema che PyInstaller copia dal sistema di build: è meglio
+# usare quelle della distribuzione. In particolare libstdc++ di Ubuntu 22.04,
+# più vecchia di quella richiesta dalla Mesa dei sistemi recenti, faceva
+# fallire l'avvio su X11 con "Could not initialize GLX".
+DROP_SYSTEM_LIBS = {"libstdc++.so.6", "libgcc_s.so.1"}
+
 
 def _stem(path: str) -> str:
     """Basename senza estensione e senza suffissi di versione (es. libQt6Core.so.6 -> qt6core)."""
@@ -72,6 +78,8 @@ def _keep(entry) -> bool:
         return False
     raw = re.split(r"[/\\]", dest)[-1]
     stem = _stem(dest)
+    if raw in DROP_SYSTEM_LIBS:
+        return False
     if "pyside" in stem or "shiboken" in stem:
         return True
     if dest.startswith("pyside6/") and (".abi3" in raw or raw.endswith(".pyd")):
